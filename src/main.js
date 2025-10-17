@@ -35,12 +35,14 @@ let focusAnimation = null;
 
 const CLICK_DRAG_THRESHOLD = 5;
 const CAMERA_FOCUS_DURATION = 600;
+const INITIAL_CAMERA_DISTANCE = 50;
+const NODE_FOCUS_DISTANCE = 20;
 
 function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
 }
 
-camera.position.set(0, 0, 1200);
+camera.position.set(0, 0, INITIAL_CAMERA_DISTANCE);
 controls.target.set(0, 0, 0);
 controls.update();
 
@@ -114,6 +116,24 @@ orgGroup.scale.setScalar(0.05);
 
 scene.add(orgGroup);
 
+orgGroup.updateMatrixWorld(true);
+
+const headNodeMesh = nodeGroup.children.find(
+  (child) => child.userData?.node?.depth === 0,
+);
+
+if (headNodeMesh) {
+  const headPosition = headNodeMesh.getWorldPosition(new Vector3());
+
+  camera.position.set(
+    headPosition.x,
+    headPosition.y,
+    headPosition.z + INITIAL_CAMERA_DISTANCE,
+  );
+  controls.target.copy(headPosition);
+  controls.update();
+}
+
 function getIntersections(event) {
   const rect = renderer.domElement.getBoundingClientRect();
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -128,11 +148,19 @@ function focusCameraOnObject(object) {
   object.getWorldPosition(worldPosition);
 
   const cameraOffset = camera.position.clone().sub(controls.target);
+
+  if (cameraOffset.lengthSq() === 0) {
+    cameraOffset.set(0, 0, 1);
+  } else {
+    cameraOffset.normalize();
+  }
+
+  const desiredOffset = cameraOffset.multiplyScalar(NODE_FOCUS_DISTANCE);
   focusAnimation = {
     start: performance.now(),
     duration: CAMERA_FOCUS_DURATION,
     fromCameraPosition: camera.position.clone(),
-    toCameraPosition: worldPosition.clone().add(cameraOffset),
+    toCameraPosition: worldPosition.clone().add(desiredOffset),
     fromTarget: controls.target.clone(),
     toTarget: worldPosition.clone(),
   };
