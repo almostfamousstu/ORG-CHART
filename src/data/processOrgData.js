@@ -1,4 +1,4 @@
-import { hierarchy, tree } from 'd3';
+import { hierarchy, tree } from '../vendor/d3Hierarchy.js';
 
 const DEFAULT_NODE_SIZE = [260, 160];
 
