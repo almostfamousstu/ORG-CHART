@@ -2,6 +2,7 @@ import {
   AmbientLight,
   DirectionalLight,
   GridHelper,
+  Group,
 } from 'three';
 import { createCamera } from './core/createCamera.js';
 import { createControls } from './core/createControls.js';
@@ -91,8 +92,12 @@ const { group: linkGroup, dispose: disposeLinks } = createLinks(positionedLinks,
   opacity: 0.6,
 });
 
-scene.add(linkGroup);
-scene.add(nodeGroup);
+const orgGroup = new Group();
+orgGroup.add(linkGroup);
+orgGroup.add(nodeGroup);
+orgGroup.scale.setScalar(0.2);
+
+scene.add(orgGroup);
 
 const disposeResizeObserver = setupResizeObserver({ renderer, camera });
 
