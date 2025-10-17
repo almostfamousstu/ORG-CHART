@@ -38,7 +38,7 @@ const CLICK_DRAG_THRESHOLD = 5;
 const CAMERA_FOCUS_DURATION = 600;
 const INITIAL_CAMERA_DISTANCE = 50;
 const NODE_FOCUS_DISTANCE = 20;
-const NODE_ROTATION_SPEED = 0.01;
+const NODE_ROTATION_SPEED = 0.005;
 
 function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
@@ -94,12 +94,20 @@ const positionedLinks = layout.links.map((link) => ({
 
 const { group: nodeGroup, dispose: disposeNodes } = createNodes(positionedNodes, {
   radius: 100,
-  getColor: (node) => {
-    if (node.depth === 0) return 0x312e81;
-    if (node.depth === 1) return 0x1d4ed8;
-    if (node.depth === 2) return 0x2563eb;
-    return 0x38bdf8;
+  materialOptions: {
+    emissiveIntensity: 0.5,
   },
+  getColor: (node) => {
+    if (node.depth === 0) return 0x60a5fa;
+    if (node.depth === 1) return 0x38bdf8;
+    if (node.depth === 2) return 0x0ea5e9;
+    return 0x22d3ee;
+  },
+});
+
+nodeGroup.children.forEach((mesh) => {
+  mesh.userData = { ...mesh.userData, isRotating: true };
+  rotatingMeshes.add(mesh);
 });
 
 const { group: linkGroup, dispose: disposeLinks } = createLinks(positionedLinks, {
@@ -244,6 +252,7 @@ function update() {
 
   rotatingMeshes.forEach((mesh) => {
     mesh.rotation.y += NODE_ROTATION_SPEED;
+    mesh.rotation.x += NODE_ROTATION_SPEED * 0.35;
   });
 }
 

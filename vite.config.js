@@ -1,20 +1,34 @@
 import { defineConfig } from 'vite';
-import { randomFillSync, webcrypto } from 'node:crypto';
+import * as nodeCrypto from 'node:crypto';
 
-const existingCrypto = globalThis.crypto;
-const cryptoObj = existingCrypto ?? webcrypto ?? {};
+const { randomFillSync, webcrypto } = nodeCrypto;
+const fallbackCrypto = webcrypto ? Object.create(webcrypto) : {};
 
-if (typeof cryptoObj.getRandomValues !== 'function') {
-  cryptoObj.getRandomValues = (array) => randomFillSync(array);
+if (typeof fallbackCrypto.getRandomValues !== 'function' && typeof randomFillSync === 'function') {
+  fallbackCrypto.getRandomValues = (array) => randomFillSync(array);
 }
 
-if (!existingCrypto) {
+const globalCrypto = globalThis.crypto;
+
+if (!globalCrypto) {
   Object.defineProperty(globalThis, 'crypto', {
-    value: cryptoObj,
+    value: fallbackCrypto,
     configurable: true,
     enumerable: false,
     writable: true,
   });
+} else if (
+  typeof globalCrypto.getRandomValues !== 'function' &&
+  typeof fallbackCrypto.getRandomValues === 'function'
+) {
+  globalCrypto.getRandomValues = fallbackCrypto.getRandomValues.bind(fallbackCrypto);
+}
+
+if (
+  typeof nodeCrypto.getRandomValues !== 'function' &&
+  typeof fallbackCrypto.getRandomValues === 'function'
+) {
+  Reflect.set(nodeCrypto, 'getRandomValues', fallbackCrypto.getRandomValues.bind(fallbackCrypto));
 }
 
 export default defineConfig({
