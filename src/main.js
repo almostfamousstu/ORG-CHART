@@ -3,6 +3,9 @@ import {
   DirectionalLight,
   GridHelper,
   Group,
+  Raycaster,
+  Vector2,
+  Vector3,
 } from 'three';
 import { createCamera } from './core/createCamera.js';
 import { createControls } from './core/createControls.js';
@@ -24,6 +27,12 @@ const scene = createScene();
 const camera = createCamera({ aspect: window.innerWidth / window.innerHeight });
 const renderer = createRenderer({ canvas });
 const controls = createControls(camera, renderer.domElement);
+const raycaster = new Raycaster();
+const pointer = new Vector2();
+const worldPosition = new Vector3();
+let pointerDownPosition = null;
+
+const CLICK_DRAG_THRESHOLD = 5;
 
 camera.position.set(0, 0, 1200);
 controls.target.set(0, 0, 0);
@@ -98,6 +107,59 @@ orgGroup.add(nodeGroup);
 orgGroup.scale.setScalar(0.05);
 
 scene.add(orgGroup);
+
+function getIntersections(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+
+  raycaster.setFromCamera(pointer, camera);
+
+  return raycaster.intersectObjects(nodeGroup.children, false);
+}
+
+function focusCameraOnObject(object) {
+  object.getWorldPosition(worldPosition);
+
+  const cameraOffset = camera.position.clone().sub(controls.target);
+  controls.target.copy(worldPosition);
+  camera.position.copy(worldPosition).add(cameraOffset);
+  controls.update();
+}
+
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (!event.isPrimary) return;
+  pointerDownPosition = { x: event.clientX, y: event.clientY };
+});
+
+renderer.domElement.addEventListener('pointerup', (event) => {
+  if (!event.isPrimary || !pointerDownPosition) return;
+
+  const dx = event.clientX - pointerDownPosition.x;
+  const dy = event.clientY - pointerDownPosition.y;
+
+  pointerDownPosition = null;
+
+  if (Math.hypot(dx, dy) > CLICK_DRAG_THRESHOLD) {
+    return;
+  }
+
+  const intersections = getIntersections(event);
+
+  if (intersections.length === 0) {
+    return;
+  }
+
+  focusCameraOnObject(intersections[0].object);
+});
+
+renderer.domElement.addEventListener('pointerleave', () => {
+  pointerDownPosition = null;
+});
+
+renderer.domElement.addEventListener('pointercancel', () => {
+  pointerDownPosition = null;
+});
 
 const disposeResizeObserver = setupResizeObserver({ renderer, camera });
 
