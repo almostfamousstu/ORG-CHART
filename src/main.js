@@ -31,8 +31,14 @@ const raycaster = new Raycaster();
 const pointer = new Vector2();
 const worldPosition = new Vector3();
 let pointerDownPosition = null;
+let focusAnimation = null;
 
 const CLICK_DRAG_THRESHOLD = 5;
+const CAMERA_FOCUS_DURATION = 600;
+
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
+}
 
 camera.position.set(0, 0, 1200);
 controls.target.set(0, 0, 0);
@@ -122,9 +128,14 @@ function focusCameraOnObject(object) {
   object.getWorldPosition(worldPosition);
 
   const cameraOffset = camera.position.clone().sub(controls.target);
-  controls.target.copy(worldPosition);
-  camera.position.copy(worldPosition).add(cameraOffset);
-  controls.update();
+  focusAnimation = {
+    start: performance.now(),
+    duration: CAMERA_FOCUS_DURATION,
+    fromCameraPosition: camera.position.clone(),
+    toCameraPosition: worldPosition.clone().add(cameraOffset),
+    fromTarget: controls.target.clone(),
+    toTarget: worldPosition.clone(),
+  };
 }
 
 renderer.domElement.addEventListener('pointerdown', (event) => {
@@ -164,6 +175,30 @@ renderer.domElement.addEventListener('pointercancel', () => {
 const disposeResizeObserver = setupResizeObserver({ renderer, camera });
 
 function update() {
+  if (focusAnimation) {
+    const elapsed = performance.now() - focusAnimation.start;
+    const t = Math.min(elapsed / focusAnimation.duration, 1);
+    const easedT = easeOutCubic(t);
+
+    camera.position.lerpVectors(
+      focusAnimation.fromCameraPosition,
+      focusAnimation.toCameraPosition,
+      easedT,
+    );
+
+    controls.target.lerpVectors(
+      focusAnimation.fromTarget,
+      focusAnimation.toTarget,
+      easedT,
+    );
+
+    if (t >= 1) {
+      camera.position.copy(focusAnimation.toCameraPosition);
+      controls.target.copy(focusAnimation.toTarget);
+      focusAnimation = null;
+    }
+  }
+
   controls.update();
 }
 
