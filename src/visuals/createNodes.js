@@ -1,9 +1,9 @@
-import { BoxGeometry, Group, Mesh, MeshStandardMaterial } from 'three';
+import { Group, Mesh, MeshStandardMaterial, SphereGeometry } from 'three';
 
-const DEFAULT_DIMENSIONS = {
-  width: 200,
-  height: 120,
-  depth: 40,
+const DEFAULT_RADIUS = 100;
+const DEFAULT_SEGMENTS = {
+  width: 32,
+  height: 16,
 };
 
 export function createNodes(nodes, options = {}) {
@@ -12,16 +12,14 @@ export function createNodes(nodes, options = {}) {
   }
 
   const {
-    dimensions = DEFAULT_DIMENSIONS,
+    radius = DEFAULT_RADIUS,
+    widthSegments = DEFAULT_SEGMENTS.width,
+    heightSegments = DEFAULT_SEGMENTS.height,
     materialOptions = {},
     getColor,
   } = options;
 
-  const geometry = new BoxGeometry(
-    dimensions.width,
-    dimensions.height,
-    dimensions.depth,
-  );
+  const geometry = new SphereGeometry(radius, widthSegments, heightSegments);
 
   const baseMaterial = new MeshStandardMaterial({
     color: 0x2563eb,
