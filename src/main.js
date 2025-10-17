@@ -32,11 +32,13 @@ const pointer = new Vector2();
 const worldPosition = new Vector3();
 let pointerDownPosition = null;
 let focusAnimation = null;
+const rotatingMeshes = new Set();
 
 const CLICK_DRAG_THRESHOLD = 5;
 const CAMERA_FOCUS_DURATION = 600;
 const INITIAL_CAMERA_DISTANCE = 50;
 const NODE_FOCUS_DISTANCE = 20;
+const NODE_ROTATION_SPEED = 0.01;
 
 function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
@@ -91,11 +93,7 @@ const positionedLinks = layout.links.map((link) => ({
 }));
 
 const { group: nodeGroup, dispose: disposeNodes } = createNodes(positionedNodes, {
-  dimensions: {
-    width: 200,
-    height: 120,
-    depth: 36,
-  },
+  radius: 100,
   getColor: (node) => {
     if (node.depth === 0) return 0x312e81;
     if (node.depth === 1) return 0x1d4ed8;
@@ -166,6 +164,19 @@ function focusCameraOnObject(object) {
   };
 }
 
+function toggleNodeRotation(mesh) {
+  if (!mesh) return;
+
+  if (mesh.userData?.isRotating) {
+    mesh.userData = { ...mesh.userData, isRotating: false };
+    rotatingMeshes.delete(mesh);
+    return;
+  }
+
+  mesh.userData = { ...mesh.userData, isRotating: true };
+  rotatingMeshes.add(mesh);
+}
+
 renderer.domElement.addEventListener('pointerdown', (event) => {
   if (!event.isPrimary) return;
   pointerDownPosition = { x: event.clientX, y: event.clientY };
@@ -189,7 +200,9 @@ renderer.domElement.addEventListener('pointerup', (event) => {
     return;
   }
 
-  focusCameraOnObject(intersections[0].object);
+  const [intersection] = intersections;
+  focusCameraOnObject(intersection.object);
+  toggleNodeRotation(intersection.object);
 });
 
 renderer.domElement.addEventListener('pointerleave', () => {
@@ -228,6 +241,10 @@ function update() {
   }
 
   controls.update();
+
+  rotatingMeshes.forEach((mesh) => {
+    mesh.rotation.y += NODE_ROTATION_SPEED;
+  });
 }
 
 function render() {
@@ -248,4 +265,5 @@ window.addEventListener('beforeunload', () => {
   controls.dispose();
   disposeLinks();
   disposeNodes();
+  rotatingMeshes.clear();
 });
