@@ -95,7 +95,7 @@ const { group: linkGroup, dispose: disposeLinks } = createLinks(positionedLinks,
 const orgGroup = new Group();
 orgGroup.add(linkGroup);
 orgGroup.add(nodeGroup);
-orgGroup.scale.setScalar(0.2);
+orgGroup.scale.setScalar(0.05);
 
 scene.add(orgGroup);
 
