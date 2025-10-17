@@ -39,6 +39,7 @@ const CAMERA_FOCUS_DURATION = 600;
 const INITIAL_CAMERA_DISTANCE = 50;
 const NODE_FOCUS_DISTANCE = 20;
 const NODE_ROTATION_SPEED = 0.005;
+const NODE_RIPPLE_STRENGTH = 4;
 
 function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
@@ -92,7 +93,11 @@ const positionedLinks = layout.links.map((link) => ({
   },
 }));
 
-const { group: nodeGroup, dispose: disposeNodes } = createNodes(positionedNodes, {
+const {
+  group: nodeGroup,
+  update: updateNodes,
+  dispose: disposeNodes,
+} = createNodes(positionedNodes, {
   radius: 100,
   materialOptions: {
     emissiveIntensity: 0.5,
@@ -109,6 +114,46 @@ nodeGroup.children.forEach((mesh) => {
   mesh.userData = { ...mesh.userData, isRotating: true };
   rotatingMeshes.add(mesh);
 });
+
+let activeRippleMesh = null;
+
+function setActiveRippleMesh(mesh) {
+  if (activeRippleMesh && activeRippleMesh !== mesh) {
+    const ripple = activeRippleMesh.userData?.ripple;
+    if (ripple) {
+      ripple.target = 0;
+    }
+  }
+
+  activeRippleMesh = mesh || null;
+
+  if (!activeRippleMesh) {
+    return;
+  }
+
+  const ripple = activeRippleMesh.userData?.ripple;
+  if (ripple) {
+    ripple.target = NODE_RIPPLE_STRENGTH;
+  }
+}
+
+function clearActiveRippleMesh(mesh) {
+  const targetMesh = mesh ?? activeRippleMesh;
+
+  if (!targetMesh) {
+    activeRippleMesh = null;
+    return;
+  }
+
+  const ripple = targetMesh.userData?.ripple;
+  if (ripple) {
+    ripple.target = 0;
+  }
+
+  if (!mesh || mesh === activeRippleMesh) {
+    activeRippleMesh = null;
+  }
+}
 
 const { group: linkGroup, dispose: disposeLinks } = createLinks(positionedLinks, {
   color: 0x38bdf8,
@@ -188,6 +233,14 @@ function toggleNodeRotation(mesh) {
 renderer.domElement.addEventListener('pointerdown', (event) => {
   if (!event.isPrimary) return;
   pointerDownPosition = { x: event.clientX, y: event.clientY };
+
+  const intersections = getIntersections(event);
+
+  if (intersections.length > 0) {
+    setActiveRippleMesh(intersections[0].object);
+  } else {
+    clearActiveRippleMesh();
+  }
 });
 
 renderer.domElement.addEventListener('pointerup', (event) => {
@@ -195,6 +248,8 @@ renderer.domElement.addEventListener('pointerup', (event) => {
 
   const dx = event.clientX - pointerDownPosition.x;
   const dy = event.clientY - pointerDownPosition.y;
+
+  clearActiveRippleMesh();
 
   pointerDownPosition = null;
 
@@ -215,15 +270,17 @@ renderer.domElement.addEventListener('pointerup', (event) => {
 
 renderer.domElement.addEventListener('pointerleave', () => {
   pointerDownPosition = null;
+  clearActiveRippleMesh();
 });
 
 renderer.domElement.addEventListener('pointercancel', () => {
   pointerDownPosition = null;
+  clearActiveRippleMesh();
 });
 
 const disposeResizeObserver = setupResizeObserver({ renderer, camera });
 
-function update() {
+function update(deltaTime, elapsedTime) {
   if (focusAnimation) {
     const elapsed = performance.now() - focusAnimation.start;
     const t = Math.min(elapsed / focusAnimation.duration, 1);
@@ -254,14 +311,29 @@ function update() {
     mesh.rotation.y += NODE_ROTATION_SPEED;
     mesh.rotation.x += NODE_ROTATION_SPEED * 0.35;
   });
+
+  if (typeof updateNodes === 'function') {
+    updateNodes(deltaTime, elapsedTime);
+  }
 }
 
 function render() {
   renderer.render(scene, camera);
 }
 
-function animate() {
-  update();
+let previousTimestamp = 0;
+
+function animate(timestamp = 0) {
+  if (!previousTimestamp) {
+    previousTimestamp = timestamp;
+  }
+
+  const deltaTime = (timestamp - previousTimestamp) / 1000;
+  previousTimestamp = timestamp;
+
+  const elapsedTime = timestamp / 1000;
+
+  update(deltaTime, elapsedTime);
   render();
 }
 
