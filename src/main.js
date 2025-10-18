@@ -16,6 +16,7 @@ import { processOrgData } from './data/processOrgData.js';
 import { sampleOrgData } from './data/sampleOrgData.js';
 import { createLinks } from './visuals/createLinks.js';
 import { createNodes } from './visuals/createNodes.js';
+import { createCarousel } from './visuals/createCarousel.js';
 
 const canvas = document.getElementById('org-chart-canvas');
 
@@ -27,6 +28,7 @@ const scene = createScene();
 const camera = createCamera({ aspect: window.innerWidth / window.innerHeight });
 const renderer = createRenderer({ canvas });
 const controls = createControls(camera, renderer.domElement);
+scene.add(camera);
 const raycaster = new Raycaster();
 const pointer = new Vector2();
 const worldPosition = new Vector3();
@@ -34,6 +36,14 @@ let pointerDownPosition = null;
 let focusAnimation = null;
 const rotatingMeshes = new Set();
 let activeRotatingMesh = null;
+let selectedMesh = null;
+let pointerDownObject = null;
+
+const carouselDragState = {
+  active: false,
+  pointerId: null,
+  lastX: 0,
+};
 
 const CLICK_DRAG_THRESHOLD = 5;
 const CAMERA_FOCUS_DURATION = 600;
@@ -82,6 +92,7 @@ const layout = processOrgData(sampleOrgData, {
 
 const nodesById = new Map();
 const childrenByParentId = new Map();
+const meshByNodeId = new Map();
 
 layout.nodes.forEach((node) => {
   const clone = { ...node };
@@ -213,6 +224,10 @@ const {
 
 nodeGroup.children.forEach((mesh) => {
   mesh.userData = { ...mesh.userData, isRotating: false };
+  const node = mesh.userData?.node;
+  if (node?.id) {
+    meshByNodeId.set(node.id, mesh);
+  }
 });
 
 let activeRippleMesh = null;
@@ -283,6 +298,9 @@ orgGroup.scale.setScalar(0.05);
 
 scene.add(orgGroup);
 
+const carousel = createCarousel({ panelCount: 4 });
+camera.add(carousel.group);
+
 orgGroup.updateMatrixWorld(true);
 
 const headNodeMesh = nodeGroup.children.find(
@@ -333,14 +351,25 @@ function startInitialCameraArrival(targetPosition) {
   };
 }
 
-function getIntersections(event) {
+function updatePointerFromEvent(event) {
   const rect = renderer.domElement.getBoundingClientRect();
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+}
 
+function getIntersections(event, targets = nodeGroup.children) {
+  updatePointerFromEvent(event);
   raycaster.setFromCamera(pointer, camera);
 
-  return raycaster.intersectObjects(nodeGroup.children, false);
+  return raycaster.intersectObjects(targets, false);
+}
+
+function getCarouselIntersections(event) {
+  if (!carousel.isVisible()) {
+    return [];
+  }
+
+  return getIntersections(event, carousel.interactiveObjects);
 }
 
 function focusCameraOnObject(object) {
@@ -366,7 +395,20 @@ function focusCameraOnObject(object) {
 }
 
 function setRotatingMesh(mesh) {
-  if (!mesh || mesh === activeRotatingMesh) {
+  if (mesh === activeRotatingMesh) {
+    return;
+  }
+
+  if (!mesh) {
+    if (activeRotatingMesh) {
+      activeRotatingMesh.userData = {
+        ...activeRotatingMesh.userData,
+        isRotating: false,
+      };
+      rotatingMeshes.delete(activeRotatingMesh);
+    }
+
+    activeRotatingMesh = null;
     return;
   }
 
@@ -389,53 +431,257 @@ function setRotatingMesh(mesh) {
   rotatingMeshes.add(activeRotatingMesh);
 }
 
+function buildCarouselHelpers(node) {
+  const children = [...(childrenByParentId.get(node.id) ?? [])];
+  const parent = node.parentId != null ? nodesById.get(node.parentId) ?? null : null;
+  const siblings =
+    node.parentId != null ? [...(childrenByParentId.get(node.parentId) ?? [])] : [];
+  const siblingIndex = siblings.findIndex((candidate) => candidate.id === node.id);
+
+  let siblingSummary = 'No siblings';
+
+  if (node.depth === 0) {
+    siblingSummary = 'Root node';
+  } else if (siblings.length === 1) {
+    siblingSummary = 'Only node in branch';
+  } else if (siblings.length > 1 && siblingIndex >= 0) {
+    siblingSummary = `Sibling ${siblingIndex + 1} of ${siblings.length}`;
+  }
+
+  return {
+    childCount: children.length,
+    parentName: parent?.name ?? '—',
+    siblingSummary,
+    offsetSummary: `${node.x.toFixed(1)}, ${node.y.toFixed(1)}`,
+    firstChild: children[0]?.name ?? '—',
+    lastChild: children.length > 0 ? children[children.length - 1]?.name ?? '—' : '—',
+    siblingCount: siblings.length,
+  };
+}
+
+function updateCarouselForNode(node) {
+  if (!node) {
+    return;
+  }
+
+  const helpers = buildCarouselHelpers(node);
+  carousel.setNode(node, helpers);
+  carousel.setScroll(0);
+}
+
+function setSelectedMesh(mesh) {
+  if (mesh === selectedMesh) {
+    return;
+  }
+
+  if (!mesh) {
+    selectedMesh = null;
+    setRotatingMesh(null);
+    carousel.setVisible(false);
+    return;
+  }
+
+  selectedMesh = mesh;
+  setRotatingMesh(mesh);
+  carousel.setVisible(true);
+
+  const node = mesh.userData?.node;
+  if (node) {
+    updateCarouselForNode(node);
+  }
+}
+
+function handleNavigation(action) {
+  if (!selectedMesh) {
+    return;
+  }
+
+  const node = selectedMesh.userData?.node;
+
+  if (!node) {
+    return;
+  }
+
+  let targetNode = null;
+
+  if (node.depth === 0) {
+    const children = [...(childrenByParentId.get(node.id) ?? [])];
+    if (children.length === 0) {
+      return;
+    }
+
+    targetNode = action === 'back' ? children[0] : children[children.length - 1];
+  } else {
+    const siblings = [...(childrenByParentId.get(node.parentId) ?? [])];
+    if (siblings.length === 0) {
+      return;
+    }
+
+    const index = siblings.findIndex((candidate) => candidate.id === node.id);
+
+    if (index < 0) {
+      return;
+    }
+
+    if (action === 'back') {
+      targetNode = siblings[(index - 1 + siblings.length) % siblings.length];
+    } else {
+      targetNode = siblings[(index + 1) % siblings.length];
+    }
+  }
+
+  if (!targetNode) {
+    return;
+  }
+
+  const targetMesh = meshByNodeId.get(targetNode.id);
+
+  if (!targetMesh) {
+    return;
+  }
+
+  focusCameraOnObject(targetMesh);
+  setSelectedMesh(targetMesh);
+}
+
+function resetPointerInteraction({ clearNodeRipple = true } = {}) {
+  if (pointerDownObject) {
+    carousel.handlePointerUp(pointerDownObject);
+  }
+
+  pointerDownObject = null;
+  pointerDownPosition = null;
+  carouselDragState.active = false;
+  carouselDragState.pointerId = null;
+
+  if (clearNodeRipple) {
+    clearActiveRippleMesh();
+  }
+}
+
 renderer.domElement.addEventListener('pointerdown', (event) => {
   if (!event.isPrimary) return;
+
   pointerDownPosition = { x: event.clientX, y: event.clientY };
+  pointerDownObject = null;
+  carouselDragState.active = false;
+  carouselDragState.pointerId = null;
+  carouselDragState.lastX = event.clientX;
 
-  const intersections = getIntersections(event);
+  const uiIntersections = getCarouselIntersections(event);
 
-  if (intersections.length > 0) {
-    setActiveRippleMesh(intersections[0].object);
+  if (uiIntersections.length > 0) {
+    const [intersection] = uiIntersections;
+    pointerDownObject = intersection.object;
+    carousel.handlePointerDown(intersection.object, intersection.uv);
+
+    if (pointerDownObject.userData?.type === 'panel') {
+      carouselDragState.pointerId = event.pointerId;
+      carouselDragState.lastX = event.clientX;
+    }
+
+    event.preventDefault();
+    return;
+  }
+
+  const nodeIntersections = getIntersections(event);
+
+  if (nodeIntersections.length > 0) {
+    setActiveRippleMesh(nodeIntersections[0].object);
   } else {
     clearActiveRippleMesh();
   }
 });
 
+renderer.domElement.addEventListener('pointermove', (event) => {
+  if (!event.isPrimary) return;
+
+  if (
+    pointerDownObject &&
+    pointerDownObject.userData?.type === 'panel' &&
+    carousel.isVisible() &&
+    carouselDragState.pointerId === event.pointerId
+  ) {
+    const deltaX = event.clientX - carouselDragState.lastX;
+    if (!carouselDragState.active && Math.abs(deltaX) > 1) {
+      carouselDragState.active = true;
+    }
+
+    if (carouselDragState.active) {
+      carousel.scrollBy(-deltaX * 0.003);
+    }
+
+    carouselDragState.lastX = event.clientX;
+  }
+});
+
 renderer.domElement.addEventListener('pointerup', (event) => {
-  if (!event.isPrimary || !pointerDownPosition) return;
+  if (!event.isPrimary) return;
 
-  const dx = event.clientX - pointerDownPosition.x;
-  const dy = event.clientY - pointerDownPosition.y;
-
-  clearActiveRippleMesh();
+  const hasPointerDown = Boolean(pointerDownPosition);
+  const dx = hasPointerDown ? event.clientX - pointerDownPosition.x : 0;
+  const dy = hasPointerDown ? event.clientY - pointerDownPosition.y : 0;
 
   pointerDownPosition = null;
 
-  if (Math.hypot(dx, dy) > CLICK_DRAG_THRESHOLD) {
+  if (pointerDownObject) {
+    const wasDragging = carouselDragState.active;
+    carousel.handlePointerUp(pointerDownObject);
+
+    if (!wasDragging && Math.hypot(dx, dy) <= CLICK_DRAG_THRESHOLD) {
+      const action = pointerDownObject.userData?.action;
+      if (action === 'back' || action === 'next') {
+        handleNavigation(action);
+      }
+    }
+
+    pointerDownObject = null;
+    carouselDragState.active = false;
+    carouselDragState.pointerId = null;
+    return;
+  }
+
+  clearActiveRippleMesh();
+
+  if (!hasPointerDown || Math.hypot(dx, dy) > CLICK_DRAG_THRESHOLD) {
     return;
   }
 
   const intersections = getIntersections(event);
 
   if (intersections.length === 0) {
+    setSelectedMesh(null);
     return;
   }
 
   const [intersection] = intersections;
   focusCameraOnObject(intersection.object);
-  setRotatingMesh(intersection.object);
+  setSelectedMesh(intersection.object);
 });
 
 renderer.domElement.addEventListener('pointerleave', () => {
-  pointerDownPosition = null;
-  clearActiveRippleMesh();
+  resetPointerInteraction();
 });
 
 renderer.domElement.addEventListener('pointercancel', () => {
-  pointerDownPosition = null;
-  clearActiveRippleMesh();
+  resetPointerInteraction();
 });
+
+renderer.domElement.addEventListener(
+  'wheel',
+  (event) => {
+    if (!carousel.isVisible()) {
+      return;
+    }
+
+    const dominantDelta =
+      Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+
+    carousel.scrollBy(-dominantDelta * 0.0025);
+    event.preventDefault();
+  },
+  { passive: false },
+);
 
 const disposeResizeObserver = setupResizeObserver({ renderer, camera });
 
@@ -475,6 +721,8 @@ function update(deltaTime, elapsedTime) {
   if (typeof updateNodes === 'function') {
     updateNodes(deltaTime, elapsedTime);
   }
+
+  carousel.update(deltaTime, elapsedTime);
 }
 
 function render() {
@@ -509,6 +757,7 @@ window.addEventListener('beforeunload', () => {
     disposeHeadChildLinks();
   }
   disposeNodes();
+  carousel.dispose();
   rotatingMeshes.clear();
   activeRotatingMesh = null;
 });

@@ -7,6 +7,7 @@ export function createControls(camera, domElement) {
   controls.minDistance = 10;
   controls.maxDistance = 250;
   controls.maxPolarAngle = Math.PI / 2;
+  controls.enableZoom = false;
 
   return controls;
 }
