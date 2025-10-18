@@ -38,6 +38,10 @@ let activeRotatingMesh = null;
 const CLICK_DRAG_THRESHOLD = 5;
 const CAMERA_FOCUS_DURATION = 600;
 const INITIAL_CAMERA_DISTANCE = 50;
+const INITIAL_CAMERA_TRAVEL_DURATION = 1600;
+const INITIAL_CAMERA_TRAVEL_MULTIPLIER = 3.5;
+const INITIAL_CAMERA_TARGET_OFFSET_FACTOR = 0.3;
+const INITIAL_CAMERA_OFFSET_DIRECTION = new Vector3(0.6, 0.35, 1).normalize();
 const NODE_FOCUS_DISTANCE = 20;
 const NODE_ROTATION_SPEED = 0.005 * 0.85;
 const NODE_RIPPLE_STRENGTH = 4;
@@ -175,14 +179,46 @@ const headNodeMesh = nodeGroup.children.find(
 
 if (headNodeMesh) {
   const headPosition = headNodeMesh.getWorldPosition(new Vector3());
+  startInitialCameraArrival(headPosition);
+}
 
-  camera.position.set(
-    headPosition.x,
-    headPosition.y,
-    headPosition.z + INITIAL_CAMERA_DISTANCE,
+function startInitialCameraArrival(targetPosition) {
+  const finalCameraPosition = new Vector3(
+    targetPosition.x,
+    targetPosition.y,
+    targetPosition.z + INITIAL_CAMERA_DISTANCE,
   );
-  controls.target.copy(headPosition);
+
+  const travelDirection = INITIAL_CAMERA_OFFSET_DIRECTION.clone();
+  const initialCameraPosition = finalCameraPosition
+    .clone()
+    .add(
+      travelDirection.multiplyScalar(
+        INITIAL_CAMERA_DISTANCE * INITIAL_CAMERA_TRAVEL_MULTIPLIER,
+      ),
+    );
+
+  const initialTarget = targetPosition
+    .clone()
+    .add(
+      INITIAL_CAMERA_OFFSET_DIRECTION.clone().multiplyScalar(
+        INITIAL_CAMERA_DISTANCE * INITIAL_CAMERA_TRAVEL_MULTIPLIER *
+          INITIAL_CAMERA_TARGET_OFFSET_FACTOR,
+      ),
+    );
+
+  camera.position.copy(initialCameraPosition);
+  controls.target.copy(initialTarget);
   controls.update();
+
+  focusAnimation = {
+    start: performance.now(),
+    duration: INITIAL_CAMERA_TRAVEL_DURATION,
+    fromCameraPosition: initialCameraPosition.clone(),
+    toCameraPosition: finalCameraPosition.clone(),
+    fromTarget: initialTarget.clone(),
+    toTarget: targetPosition.clone(),
+  };
 }
 
 function getIntersections(event) {
