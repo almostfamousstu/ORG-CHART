@@ -33,12 +33,13 @@ const worldPosition = new Vector3();
 let pointerDownPosition = null;
 let focusAnimation = null;
 const rotatingMeshes = new Set();
+let activeRotatingMesh = null;
 
 const CLICK_DRAG_THRESHOLD = 5;
 const CAMERA_FOCUS_DURATION = 600;
 const INITIAL_CAMERA_DISTANCE = 50;
 const NODE_FOCUS_DISTANCE = 20;
-const NODE_ROTATION_SPEED = 0.005;
+const NODE_ROTATION_SPEED = 0.005 * 0.85;
 const NODE_RIPPLE_STRENGTH = 4;
 
 function easeOutCubic(t) {
@@ -111,8 +112,7 @@ const {
 });
 
 nodeGroup.children.forEach((mesh) => {
-  mesh.userData = { ...mesh.userData, isRotating: true };
-  rotatingMeshes.add(mesh);
+  mesh.userData = { ...mesh.userData, isRotating: false };
 });
 
 let activeRippleMesh = null;
@@ -217,17 +217,26 @@ function focusCameraOnObject(object) {
   };
 }
 
-function toggleNodeRotation(mesh) {
-  if (!mesh) return;
-
-  if (mesh.userData?.isRotating) {
-    mesh.userData = { ...mesh.userData, isRotating: false };
-    rotatingMeshes.delete(mesh);
+function setRotatingMesh(mesh) {
+  if (!mesh || mesh === activeRotatingMesh) {
     return;
   }
 
-  mesh.userData = { ...mesh.userData, isRotating: true };
-  rotatingMeshes.add(mesh);
+  if (activeRotatingMesh) {
+    activeRotatingMesh.userData = {
+      ...activeRotatingMesh.userData,
+      isRotating: false,
+    };
+    rotatingMeshes.delete(activeRotatingMesh);
+  }
+
+  activeRotatingMesh = mesh;
+  activeRotatingMesh.userData = {
+    ...activeRotatingMesh.userData,
+    isRotating: true,
+  };
+  rotatingMeshes.clear();
+  rotatingMeshes.add(activeRotatingMesh);
 }
 
 renderer.domElement.addEventListener('pointerdown', (event) => {
@@ -265,7 +274,7 @@ renderer.domElement.addEventListener('pointerup', (event) => {
 
   const [intersection] = intersections;
   focusCameraOnObject(intersection.object);
-  toggleNodeRotation(intersection.object);
+  setRotatingMesh(intersection.object);
 });
 
 renderer.domElement.addEventListener('pointerleave', () => {
@@ -347,4 +356,5 @@ window.addEventListener('beforeunload', () => {
   disposeLinks();
   disposeNodes();
   rotatingMeshes.clear();
+  activeRotatingMesh = null;
 });
