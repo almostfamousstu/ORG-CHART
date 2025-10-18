@@ -45,6 +45,9 @@ const INITIAL_CAMERA_OFFSET_DIRECTION = new Vector3(0.6, 0.35, 1).normalize();
 const NODE_FOCUS_DISTANCE = 20;
 const NODE_ROTATION_SPEED = 0.005 * 0.85;
 const NODE_RIPPLE_STRENGTH = 4;
+const HEAD_CHILD_VERTICAL_MULTIPLIER = 5;
+const HEAD_CHILD_LINK_COLOR = 0x2563eb;
+const HEAD_CHILD_LINK_OPACITY = 0.45;
 
 function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
@@ -77,16 +80,84 @@ const layout = processOrgData(sampleOrgData, {
   },
 });
 
-const centerX = -((layout.bounds.minX + layout.bounds.maxX) / 2);
-const centerY = -((layout.bounds.minY + layout.bounds.maxY) / 2);
+const nodesById = new Map();
+const childrenByParentId = new Map();
 
-const positionedNodes = layout.nodes.map((node) => ({
+layout.nodes.forEach((node) => {
+  const clone = { ...node };
+  nodesById.set(clone.id, clone);
+
+  if (clone.parentId != null) {
+    const siblings = childrenByParentId.get(clone.parentId) ?? [];
+    siblings.push(clone);
+    childrenByParentId.set(clone.parentId, siblings);
+  }
+});
+
+const headNode = [...nodesById.values()].find((node) => node.depth === 0) ?? null;
+
+if (headNode) {
+  const headChildren = childrenByParentId.get(headNode.id) ?? [];
+
+  headChildren.forEach((child) => {
+    const originalOffset = child.y - headNode.y;
+    const extraOffset = originalOffset * (HEAD_CHILD_VERTICAL_MULTIPLIER - 1);
+
+    if (Math.abs(extraOffset) < Number.EPSILON) {
+      return;
+    }
+
+    const queue = [child];
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      current.y += extraOffset;
+
+      const descendants = childrenByParentId.get(current.id) ?? [];
+      queue.push(...descendants);
+    }
+  });
+}
+
+const adjustedNodes = layout.nodes.map((node) => nodesById.get(node.id));
+
+const adjustedBounds = adjustedNodes.reduce(
+  (bounds, node) => ({
+    minX: Math.min(bounds.minX, node.x),
+    maxX: Math.max(bounds.maxX, node.x),
+    minY: Math.min(bounds.minY, node.y),
+    maxY: Math.max(bounds.maxY, node.y),
+  }),
+  {
+    minX: Number.POSITIVE_INFINITY,
+    maxX: Number.NEGATIVE_INFINITY,
+    minY: Number.POSITIVE_INFINITY,
+    maxY: Number.NEGATIVE_INFINITY,
+  },
+);
+
+const adjustedLinks = layout.links.map((link) => ({
+  ...link,
+  source: {
+    x: nodesById.get(link.sourceId).x,
+    y: nodesById.get(link.sourceId).y,
+  },
+  target: {
+    x: nodesById.get(link.targetId).x,
+    y: nodesById.get(link.targetId).y,
+  },
+}));
+
+const centerX = -((adjustedBounds.minX + adjustedBounds.maxX) / 2);
+const centerY = -((adjustedBounds.minY + adjustedBounds.maxY) / 2);
+
+const positionedNodes = adjustedNodes.map((node) => ({
   ...node,
   x: node.x + centerX,
   y: -(node.y + centerY),
 }));
 
-const positionedLinks = layout.links.map((link) => ({
+const positionedLinks = adjustedLinks.map((link) => ({
   ...link,
   source: {
     x: link.source.x + centerX,
@@ -97,6 +168,31 @@ const positionedLinks = layout.links.map((link) => ({
     y: -(link.target.y + centerY),
   },
 }));
+
+const headChildConnectorLinks = headNode
+  ? (() => {
+      const headChildren = [...(childrenByParentId.get(headNode.id) ?? [])];
+
+      if (headChildren.length < 2) {
+        return [];
+      }
+
+      const sortedChildren = headChildren.sort((a, b) => a.x - b.x);
+      const segments = [];
+
+      for (let index = 0; index < sortedChildren.length - 1; index += 1) {
+        const current = sortedChildren[index];
+        const next = sortedChildren[index + 1];
+
+        segments.push({
+          source: { x: current.x + centerX, y: -(current.y + centerY) },
+          target: { x: next.x + centerX, y: -(next.y + centerY) },
+        });
+      }
+
+      return segments;
+    })()
+  : [];
 
 const {
   group: nodeGroup,
@@ -164,8 +260,24 @@ const { group: linkGroup, dispose: disposeLinks } = createLinks(positionedLinks,
   opacity: 0.6,
 });
 
+let headChildLinkGroup = null;
+let disposeHeadChildLinks = null;
+
+if (headChildConnectorLinks.length > 0) {
+  const headChildLinks = createLinks(headChildConnectorLinks, {
+    color: HEAD_CHILD_LINK_COLOR,
+    opacity: HEAD_CHILD_LINK_OPACITY,
+  });
+
+  headChildLinkGroup = headChildLinks.group;
+  disposeHeadChildLinks = headChildLinks.dispose;
+}
+
 const orgGroup = new Group();
 orgGroup.add(linkGroup);
+if (headChildLinkGroup) {
+  orgGroup.add(headChildLinkGroup);
+}
 orgGroup.add(nodeGroup);
 orgGroup.scale.setScalar(0.05);
 
@@ -271,6 +383,8 @@ function setRotatingMesh(mesh) {
     ...activeRotatingMesh.userData,
     isRotating: true,
   };
+  activeRotatingMesh.rotation.x = 0;
+  activeRotatingMesh.rotation.z = 0;
   rotatingMeshes.clear();
   rotatingMeshes.add(activeRotatingMesh);
 }
@@ -354,7 +468,8 @@ function update(deltaTime, elapsedTime) {
 
   rotatingMeshes.forEach((mesh) => {
     mesh.rotation.y += NODE_ROTATION_SPEED;
-    mesh.rotation.x += NODE_ROTATION_SPEED * 0.35;
+    mesh.rotation.x = 0;
+    mesh.rotation.z = 0;
   });
 
   if (typeof updateNodes === 'function') {
@@ -390,6 +505,9 @@ window.addEventListener('beforeunload', () => {
   renderer.dispose();
   controls.dispose();
   disposeLinks();
+  if (typeof disposeHeadChildLinks === 'function') {
+    disposeHeadChildLinks();
+  }
   disposeNodes();
   rotatingMeshes.clear();
   activeRotatingMesh = null;
