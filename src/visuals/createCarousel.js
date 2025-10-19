@@ -1,11 +1,16 @@
 import {
   CanvasTexture,
+  ClampToEdgeWrapping,
   Color,
+  Data3DTexture,
   Group,
+  LinearFilter,
   Mesh,
   PlaneGeometry,
+  RGBAFormat,
   ShaderMaterial,
   SRGBColorSpace,
+  UnsignedByteType,
   Vector2,
 } from 'three';
 
@@ -16,12 +21,14 @@ const BUTTON_WIDTH = 0.92;
 const BUTTON_HEIGHT = 0.34;
 const DEFAULT_PANEL_COUNT = 4;
 
-function createRippleMaterial({ color, opacity, texture }) {
+function createRippleMaterial({ color, opacity, volumeTexture, labelTexture }) {
   const uniforms = {
     uTime: { value: 0 },
     uRippleStrength: { value: 0 },
     uRippleCenter: { value: new Vector2(0.5, 0.5) },
-    uTexture: { value: texture },
+    uVolumeTexture: { value: volumeTexture },
+    uLabelTexture: { value: labelTexture ?? null },
+    uHasLabel: { value: labelTexture ? 1 : 0 },
     uOpacity: { value: opacity },
     uVisibility: { value: 0 },
     uBaseColor: { value: new Color(color).convertSRGBToLinear() },
@@ -54,7 +61,9 @@ function createRippleMaterial({ color, opacity, texture }) {
       }
     `,
     fragmentShader: `
-      uniform sampler2D uTexture;
+      uniform sampler3D uVolumeTexture;
+      uniform sampler2D uLabelTexture;
+      uniform float uHasLabel;
       uniform float uOpacity;
       uniform float uVisibility;
       uniform vec3 uBaseColor;
@@ -79,15 +88,32 @@ function createRippleMaterial({ color, opacity, texture }) {
         return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
       }
 
+      vec3 applyPalette(float t) {
+        vec3 c1 = vec3(0.274, 0.651, 0.933);
+        vec3 c2 = vec3(0.415, 0.549, 0.972);
+        vec3 c3 = vec3(0.239, 0.819, 0.752);
+        return mix(mix(c1, c2, smoothstep(0.0, 0.65, t)), c3, smoothstep(0.45, 1.0, t));
+      }
+
       void main() {
-        vec4 tex = texture2D(uTexture, vUv);
+        float depthCoord = fract(uTime * 0.045 + vUv.y * 0.18 + vUv.x * 0.12);
+        vec4 volumeSample = texture(uVolumeTexture, vec3(vUv, depthCoord));
         float shimmer = noise(vUv * 6.0 + uTime * 0.1) * 0.08;
         float starfield = noise(vUv * 18.0 + vec2(uTime * 0.05, uTime * 0.04));
         float glowMask = pow(1.0 - distance(vUv, vec2(0.5, 0.5)), 3.5);
         vec3 glow = uGlowColor * glowMask * uGlowIntensity;
         float atmosphere = smoothstep(0.92, 0.2, length(vPosition.xy) / 1.2);
-        float alpha = clamp(tex.a * 0.8 + 0.2 + starfield * 0.08, 0.0, 1.0) * uOpacity * uVisibility;
-        vec3 base = mix(uBaseColor, tex.rgb, 0.6);
+        vec3 paletteColor = applyPalette(volumeSample.r);
+        vec3 base = mix(uBaseColor, paletteColor + volumeSample.gba * 0.35, 0.55);
+
+        vec4 label = texture(uLabelTexture, vUv);
+        float labelPresence = uHasLabel * label.a;
+        base = mix(base, label.rgb, labelPresence);
+
+        float alpha = clamp((0.35 + volumeSample.a * 0.65 + starfield * 0.08), 0.0, 1.0);
+        alpha = max(alpha, labelPresence);
+        alpha *= uOpacity * uVisibility;
+
         vec3 color = base + shimmer + glow + atmosphere * 0.05;
         gl_FragColor = vec4(color, alpha);
       }
@@ -95,7 +121,102 @@ function createRippleMaterial({ color, opacity, texture }) {
   });
 }
 
-function createPanelTexture({ heading, subtitle, lines }) {
+function mulberry32(seed) {
+  let t = seed + 0x6d2b79f5;
+  return function next() {
+    t += 0x6d2b79f5;
+    let x = t;
+    x = Math.imul(x ^ (x >>> 15), x | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function createVolumeTexture({ size = 48, generator }) {
+  const width = size;
+  const height = size;
+  const depth = size;
+  const data = new Uint8Array(width * height * depth * 4);
+
+  let index = 0;
+  for (let z = 0; z < depth; z += 1) {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const u = x / (width - 1);
+        const v = y / (height - 1);
+        const w = z / (depth - 1);
+        const sample = generator(u, v, w) ?? [0, 0, 0, 1];
+        data[index + 0] = Math.max(0, Math.min(255, Math.round(sample[0] * 255)));
+        data[index + 1] = Math.max(0, Math.min(255, Math.round(sample[1] * 255)));
+        data[index + 2] = Math.max(0, Math.min(255, Math.round(sample[2] * 255)));
+        data[index + 3] = Math.max(0, Math.min(255, Math.round(sample[3] * 255)));
+        index += 4;
+      }
+    }
+  }
+
+  const texture = new Data3DTexture(data, width, height, depth);
+  texture.format = RGBAFormat;
+  texture.type = UnsignedByteType;
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.wrapS = ClampToEdgeWrapping;
+  texture.wrapT = ClampToEdgeWrapping;
+  texture.wrapR = ClampToEdgeWrapping;
+  texture.colorSpace = SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createPanelVolumeTexture(seed = 1) {
+  const random = mulberry32(seed * 997 + 73);
+  const phaseA = random();
+  const phaseB = random();
+  const phaseC = random();
+
+  return createVolumeTexture({
+    size: 48,
+    generator: (u, v, w) => {
+      const center = Math.sqrt((u - 0.5) * (u - 0.5) + (v - 0.5) * (v - 0.5));
+      const swirl = Math.sin((u + w) * 6.283 + phaseA * 6.283) * 0.5 + 0.5;
+      const band = Math.sin((v * 1.4 + w * 1.9 + phaseB) * 6.283) * 0.5 + 0.5;
+      const drift = Math.cos((u * 1.6 + v * 1.3 + phaseC) * 6.283) * 0.5 + 0.5;
+      const glow = Math.pow(Math.max(0, 1 - center * 1.35), 2.2);
+      const depthPulse = Math.pow(1 - Math.abs(w - 0.5) * 1.6, 2.6);
+
+      const r = 0.35 * swirl + 0.4 * glow + 0.25 * depthPulse;
+      const g = 0.32 * band + 0.38 * glow + 0.3 * drift;
+      const b = 0.28 * drift + 0.36 * glow + 0.36 * swirl;
+      const a = Math.min(1, 0.2 + glow * 0.55 + depthPulse * 0.35);
+      return [r, g, b, a];
+    },
+  });
+}
+
+function createButtonVolumeTexture(seed = 11) {
+  const random = mulberry32(seed * 577 + 191);
+  const phaseA = random();
+  const phaseB = random();
+
+  return createVolumeTexture({
+    size: 32,
+    generator: (u, v, w) => {
+      const center = Math.sqrt((u - 0.5) * (u - 0.5) + (v - 0.5) * (v - 0.5));
+      const ring = Math.sin((center * 1.8 + w * 0.9 + phaseA) * 6.283) * 0.5 + 0.5;
+      const streak = Math.cos(((u + v) * 0.9 + w * 1.7 + phaseB) * 6.283) * 0.5 + 0.5;
+      const glow = Math.pow(Math.max(0, 1 - center * 2.2), 2.4);
+      const depth = Math.pow(1 - Math.abs(w - 0.5) * 1.8, 2.8);
+
+      const r = 0.3 * ring + 0.4 * glow + 0.3 * depth;
+      const g = 0.28 * streak + 0.4 * glow + 0.32 * depth;
+      const b = 0.34 * ring + 0.34 * streak + 0.32 * glow;
+      const a = Math.min(1, 0.25 + glow * 0.5 + depth * 0.35);
+      return [r, g, b, a];
+    },
+  });
+}
+
+function createPanelLabelTexture({ heading, subtitle, lines }) {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 320;
@@ -104,23 +225,23 @@ function createPanelTexture({ heading, subtitle, lines }) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-  gradient.addColorStop(0, 'rgba(59, 130, 246, 0.18)');
-  gradient.addColorStop(0.45, 'rgba(129, 140, 248, 0.26)');
-  gradient.addColorStop(1, 'rgba(45, 212, 191, 0.2)');
+  gradient.addColorStop(0, 'rgba(59, 130, 246, 0.08)');
+  gradient.addColorStop(0.45, 'rgba(129, 140, 248, 0.12)');
+  gradient.addColorStop(1, 'rgba(45, 212, 191, 0.1)');
   ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(24, 24, canvas.width - 48, canvas.height - 48);
 
   const highlightGradient = ctx.createLinearGradient(0, 0, canvas.width, 0);
   highlightGradient.addColorStop(0, 'rgba(255, 255, 255, 0.0)');
-  highlightGradient.addColorStop(0.5, 'rgba(190, 242, 255, 0.35)');
+  highlightGradient.addColorStop(0.5, 'rgba(190, 242, 255, 0.28)');
   highlightGradient.addColorStop(1, 'rgba(255, 255, 255, 0.0)');
   ctx.fillStyle = highlightGradient;
-  ctx.fillRect(0, 0, canvas.width, 48);
+  ctx.fillRect(32, 36, canvas.width - 64, 38);
 
-  ctx.strokeStyle = 'rgba(190, 242, 255, 0.35)';
-  ctx.lineWidth = 3;
-  ctx.shadowColor = 'rgba(125, 211, 252, 0.35)';
-  ctx.shadowBlur = 18;
+  ctx.strokeStyle = 'rgba(190, 242, 255, 0.42)';
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = 'rgba(125, 211, 252, 0.28)';
+  ctx.shadowBlur = 12;
   ctx.beginPath();
   if (typeof ctx.roundRect === 'function') {
     ctx.roundRect(24, 24, canvas.width - 48, canvas.height - 48, 28);
@@ -138,32 +259,22 @@ function createPanelTexture({ heading, subtitle, lines }) {
   ctx.stroke();
   ctx.shadowBlur = 0;
 
-  ctx.fillStyle = 'rgba(226, 232, 240, 0.92)';
+  ctx.fillStyle = 'rgba(226, 232, 240, 0.96)';
   ctx.font = '300 48px "Inter", "Helvetica Neue", sans-serif';
-  ctx.fillText(heading, 36, 88);
+  ctx.fillText(heading, 36, 96);
 
   if (subtitle) {
-    ctx.fillStyle = 'rgba(148, 197, 253, 0.82)';
+    ctx.fillStyle = 'rgba(148, 197, 253, 0.9)';
     ctx.font = '300 28px "Inter", "Helvetica Neue", sans-serif';
-    ctx.fillText(subtitle, 36, 128);
+    ctx.fillText(subtitle, 36, 138);
   }
 
-  ctx.fillStyle = 'rgba(241, 245, 249, 0.82)';
+  ctx.fillStyle = 'rgba(241, 245, 249, 0.88)';
   ctx.font = '300 26px "Inter", "Helvetica Neue", sans-serif';
 
   lines.forEach((line, index) => {
-    ctx.fillText(line, 36, 180 + index * 42);
+    ctx.fillText(line, 36, 192 + index * 42);
   });
-
-  ctx.fillStyle = 'rgba(191, 219, 254, 0.28)';
-  for (let i = 0; i < 36; i += 1) {
-    const radius = Math.random() * 3 + 1;
-    const x = Math.random() * canvas.width;
-    const y = Math.random() * canvas.height;
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
-  }
 
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
@@ -171,7 +282,7 @@ function createPanelTexture({ heading, subtitle, lines }) {
   return texture;
 }
 
-function createButtonTexture(label) {
+function createButtonLabelTexture(label) {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 180;
@@ -180,16 +291,16 @@ function createButtonTexture(label) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-  gradient.addColorStop(0, 'rgba(96, 165, 250, 0.2)');
-  gradient.addColorStop(0.5, 'rgba(165, 180, 252, 0.35)');
-  gradient.addColorStop(1, 'rgba(45, 212, 191, 0.25)');
+  gradient.addColorStop(0, 'rgba(96, 165, 250, 0.08)');
+  gradient.addColorStop(0.5, 'rgba(165, 180, 252, 0.18)');
+  gradient.addColorStop(1, 'rgba(45, 212, 191, 0.12)');
   ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(36, 28, canvas.width - 72, canvas.height - 56);
 
-  ctx.strokeStyle = 'rgba(191, 219, 254, 0.45)';
-  ctx.lineWidth = 3;
-  ctx.shadowColor = 'rgba(99, 102, 241, 0.45)';
-  ctx.shadowBlur = 16;
+  ctx.strokeStyle = 'rgba(191, 219, 254, 0.48)';
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = 'rgba(99, 102, 241, 0.32)';
+  ctx.shadowBlur = 10;
   ctx.beginPath();
   if (typeof ctx.roundRect === 'function') {
     ctx.roundRect(28, 24, canvas.width - 56, canvas.height - 48, 32);
@@ -207,7 +318,7 @@ function createButtonTexture(label) {
   ctx.stroke();
   ctx.shadowBlur = 0;
 
-  ctx.fillStyle = 'rgba(241, 245, 249, 0.88)';
+  ctx.fillStyle = 'rgba(241, 245, 249, 0.94)';
   ctx.font = '300 64px "Inter", "Helvetica Neue", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -249,21 +360,26 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
   const buttonGeometry = new PlaneGeometry(BUTTON_WIDTH, BUTTON_HEIGHT, 16, 16);
 
   const panels = [];
-  const panelTextures = new Array(panelCount).fill(null);
+  const panelLabelTextures = new Array(panelCount).fill(null);
+  const panelVolumeTextures = new Array(panelCount).fill(null);
   const visibilityState = { value: 0, target: 0, speed: 3.2 };
 
   for (let index = 0; index < panelCount; index += 1) {
-    const texture = createPanelTexture({
+    const volumeTexture = createPanelVolumeTexture(index + 1);
+    panelVolumeTextures[index] = volumeTexture;
+
+    const labelTexture = createPanelLabelTexture({
       heading: 'Panel',
       subtitle: `Segment ${index + 1}`,
       lines: ['Awaiting selection'],
     });
-    panelTextures[index] = texture;
+    panelLabelTextures[index] = labelTexture;
 
     const material = createRippleMaterial({
       color: 0x67e8f9,
       opacity: 0.85,
-      texture,
+      volumeTexture,
+      labelTexture,
     });
     material.uniforms.uGlowColor.value.set(0x22d3ee).convertSRGBToLinear();
     material.uniforms.uGlowIntensity.value = 0.95;
@@ -274,23 +390,34 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
       ...mesh.userData,
       type: 'panel',
       ripple: createRippleState(7),
+      panelIndex: index,
     };
 
     group.add(mesh);
     panels.push(mesh);
   }
 
+  const backTextures = {
+    volume: createButtonVolumeTexture(3),
+    label: createButtonLabelTexture('Back'),
+  };
   const backMaterial = createRippleMaterial({
     color: 0x38bdf8,
     opacity: 0.9,
-    texture: createButtonTexture('Back'),
+    volumeTexture: backTextures.volume,
+    labelTexture: backTextures.label,
   });
   backMaterial.uniforms.uGlowColor.value.set(0x60a5fa).convertSRGBToLinear();
   backMaterial.uniforms.uGlowIntensity.value = 0.85;
+  const nextTextures = {
+    volume: createButtonVolumeTexture(5),
+    label: createButtonLabelTexture('Next'),
+  };
   const nextMaterial = createRippleMaterial({
     color: 0x2563eb,
     opacity: 0.9,
-    texture: createButtonTexture('Next'),
+    volumeTexture: nextTextures.volume,
+    labelTexture: nextTextures.label,
   });
   nextMaterial.uniforms.uGlowColor.value.set(0x818cf8).convertSRGBToLinear();
   nextMaterial.uniforms.uGlowIntensity.value = 0.85;
@@ -333,14 +460,31 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
   }
 
   function setPanelTexturesFromData(panelsData) {
-    for (let index = 0; index < panelTextures.length; index += 1) {
-      disposeTexture(panelTextures[index]);
+    for (let index = 0; index < panelLabelTextures.length; index += 1) {
+      disposeTexture(panelLabelTextures[index]);
 
       const panelDescriptor = panelsData[index] ?? panelsData[panelsData.length - 1];
-      const texture = createPanelTexture(panelDescriptor);
-      panelTextures[index] = texture;
-      panels[index].material.uniforms.uTexture.value = texture;
+      const labelTexture = createPanelLabelTexture(panelDescriptor);
+      panelLabelTextures[index] = labelTexture;
     }
+
+    panels.forEach((panel, meshIndex) => {
+      const material = panel.material;
+      if (!material?.uniforms) return;
+      const dataIndex = panel.userData?.panelIndex ?? meshIndex;
+      const labelTexture = panelLabelTextures[dataIndex];
+      const volumeTexture = panelVolumeTextures[dataIndex];
+      if (labelTexture) {
+        material.uniforms.uLabelTexture.value = labelTexture;
+        material.uniforms.uHasLabel.value = 1;
+      } else {
+        material.uniforms.uLabelTexture.value = null;
+        material.uniforms.uHasLabel.value = 0;
+      }
+      if (volumeTexture) {
+        material.uniforms.uVolumeTexture.value = volumeTexture;
+      }
+    });
   }
 
   function setNode(node, helpers = {}) {
@@ -395,17 +539,17 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
   }
 
   function scrollBy(delta) {
-    if (panelTextures.length === 0) return;
+    if (panelLabelTextures.length === 0) return;
 
     scrollPosition += delta;
-    const length = panelTextures.length;
+    const length = panelLabelTextures.length;
     if (length > 0) {
       scrollPosition = mod(scrollPosition, length);
     }
   }
 
   function setScroll(position) {
-    const length = panelTextures.length;
+    const length = panelLabelTextures.length;
     if (length === 0) return;
     scrollPosition = mod(position, length);
   }
@@ -424,7 +568,18 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
       const dataIndex = mod(baseIndex + i, length);
       panelMesh.position.x = (i - offset - (length - 1) / 2) * PANEL_SPACING;
       panelMesh.userData.panelIndex = dataIndex;
-      panelMesh.material.uniforms.uTexture.value = panelTextures[dataIndex];
+      const labelTexture = panelLabelTextures[dataIndex];
+      const volumeTexture = panelVolumeTextures[dataIndex];
+      if (labelTexture) {
+        panelMesh.material.uniforms.uLabelTexture.value = labelTexture;
+        panelMesh.material.uniforms.uHasLabel.value = 1;
+      } else {
+        panelMesh.material.uniforms.uLabelTexture.value = null;
+        panelMesh.material.uniforms.uHasLabel.value = 0;
+      }
+      if (volumeTexture) {
+        panelMesh.material.uniforms.uVolumeTexture.value = volumeTexture;
+      }
     }
   }
 
@@ -504,14 +659,16 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
     panelGeometry.dispose();
     buttonGeometry.dispose();
     panels.forEach((panel) => {
-      const texture = panel.material?.uniforms?.uTexture?.value;
-      disposeTexture(texture);
-      panel.material.dispose();
+      panel.material?.dispose();
     });
+    panelLabelTextures.forEach(disposeTexture);
+    panelVolumeTextures.forEach(disposeTexture);
+    disposeTexture(backTextures.label);
+    disposeTexture(backTextures.volume);
+    disposeTexture(nextTextures.label);
+    disposeTexture(nextTextures.volume);
     [backButton, nextButton].forEach((button) => {
-      const texture = button.material?.uniforms?.uTexture?.value;
-      disposeTexture(texture);
-      button.material.dispose();
+      button.material?.dispose();
     });
   }
 
