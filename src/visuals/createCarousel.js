@@ -6,6 +6,8 @@ import {
   Group,
   LinearFilter,
   Mesh,
+  Sprite,
+  SpriteMaterial,
   PlaneGeometry,
   RGBAFormat,
   ShaderMaterial,
@@ -13,10 +15,14 @@ import {
   UnsignedByteType,
   Vector2,
 } from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { createRoundedBoxGlassMaterial, loadHdrEquirect } from '../three/roundedBoxMaterial.js';
 
-const PANEL_SPACING = 1.4;
+const PANEL_SPACING = 1.4; // retained for potential linear fallback
 const PANEL_WIDTH = 1.6;
 const PANEL_HEIGHT = 0.96;
+const CAROUSEL_RADIUS = 1.25; // ring radius for Y-axis rotation
+const BUTTON_MARGIN_WORLD = 0.18; // margin from screen edge at button depth
 const BUTTON_WIDTH = 0.92;
 const BUTTON_HEIGHT = 0.34;
 const DEFAULT_PANEL_COUNT = 4;
@@ -289,37 +295,9 @@ function createButtonLabelTexture(label) {
 
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-  gradient.addColorStop(0, 'rgba(96, 165, 250, 0.08)');
-  gradient.addColorStop(0.5, 'rgba(165, 180, 252, 0.18)');
-  gradient.addColorStop(1, 'rgba(45, 212, 191, 0.12)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(36, 28, canvas.width - 72, canvas.height - 56);
-
-  ctx.strokeStyle = 'rgba(191, 219, 254, 0.48)';
-  ctx.lineWidth = 2.5;
-  ctx.shadowColor = 'rgba(99, 102, 241, 0.32)';
-  ctx.shadowBlur = 10;
-  ctx.beginPath();
-  if (typeof ctx.roundRect === 'function') {
-    ctx.roundRect(28, 24, canvas.width - 56, canvas.height - 48, 32);
-  } else {
-    ctx.moveTo(60, 24);
-    ctx.lineTo(canvas.width - 60, 24);
-    ctx.quadraticCurveTo(canvas.width - 28, 24, canvas.width - 28, 56);
-    ctx.lineTo(canvas.width - 28, canvas.height - 56);
-    ctx.quadraticCurveTo(canvas.width - 28, canvas.height - 24, canvas.width - 60, canvas.height - 24);
-    ctx.lineTo(60, canvas.height - 24);
-    ctx.quadraticCurveTo(28, canvas.height - 24, 28, canvas.height - 56);
-    ctx.lineTo(28, 56);
-    ctx.quadraticCurveTo(28, 24, 60, 24);
-  }
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-
-  ctx.fillStyle = 'rgba(241, 245, 249, 0.94)';
-  ctx.font = '300 64px "Inter", "Helvetica Neue", sans-serif';
+  // Text only, transparent background
+  ctx.fillStyle = 'rgba(241, 245, 249, 0.98)';
+  ctx.font = '400 96px "Inter", "Helvetica Neue", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(label, canvas.width / 2, canvas.height / 2);
@@ -352,17 +330,53 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
   const group = new Group();
   group.visible = false;
   const baseScale = 0.85;
-  const basePositionZ = -1.8;
+  // Move the carousel farther from the camera so the full ring is visible
+  const basePositionZ = -3.5;
   group.position.set(0, -0.2, basePositionZ);
   group.scale.setScalar(baseScale * 0.9);
 
+  // UI group, attached to camera for screen-edge buttons
+  const uiGroup = new Group();
+  uiGroup.name = 'carousel-ui';
+
   const panelGeometry = new PlaneGeometry(PANEL_WIDTH, PANEL_HEIGHT, 32, 32);
   const buttonGeometry = new PlaneGeometry(BUTTON_WIDTH, BUTTON_HEIGHT, 16, 16);
+
+  // RoundedBox glass backplates (Codrops-style)
+  const PANEL_RADIUS = 0.12;
+  const BUTTON_RADIUS = 0.10;
+  const BOX_DEPTH = 0.08;
+
+  const panelBackGeometry = new RoundedBoxGeometry(PANEL_WIDTH, PANEL_HEIGHT, BOX_DEPTH, 16, PANEL_RADIUS);
+  const buttonBackGeometry = new RoundedBoxGeometry(BUTTON_WIDTH, BUTTON_HEIGHT, BOX_DEPTH, 12, BUTTON_RADIUS);
+
+  const glassMaterial = createRoundedBoxGlassMaterial({
+    transmission: 1,
+    thickness: 1.5,
+    roughness: 0.07,
+    envMap: null,
+    envMapIntensity: 1.5,
+  });
+
+  // Load an HDR env map (Codrops-style reflections)
+  // The file is placed in `public/assets/empty_warehouse_01_2k.hdr`.
+  const HDR_URL = '/assets/empty_warehouse_01_2k.hdr';
+  loadHdrEquirect(HDR_URL)
+    .then((tex) => {
+      glassMaterial.envMap = tex;
+      glassMaterial.envMapIntensity = 1.5;
+      glassMaterial.needsUpdate = true;
+    })
+    .catch(() => {
+      /* ignore missing HDR; glass still works */
+    });
 
   const panels = [];
   const panelLabelTextures = new Array(panelCount).fill(null);
   const panelVolumeTextures = new Array(panelCount).fill(null);
   const visibilityState = { value: 0, target: 0, speed: 3.2 };
+
+  const glassBackMeshes = [];
 
   for (let index = 0; index < panelCount; index += 1) {
     const volumeTexture = createPanelVolumeTexture(index + 1);
@@ -393,54 +407,31 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
       panelIndex: index,
     };
 
+    // Add glass backplate behind the panel plane as a child so it follows rotation/position
+    const back = new Mesh(panelBackGeometry, glassMaterial);
+    back.position.set(0, 0, -BOX_DEPTH * 0.6);
+    back.userData = { type: 'panelBack' };
+    back.raycast = () => {};
+    mesh.add(back);
+
     group.add(mesh);
+    glassBackMeshes.push(back);
     panels.push(mesh);
   }
 
-  const backTextures = {
-    volume: createButtonVolumeTexture(3),
-    label: createButtonLabelTexture('Back'),
-  };
-  const backMaterial = createRippleMaterial({
-    color: 0x38bdf8,
-    opacity: 0.9,
-    volumeTexture: backTextures.volume,
-    labelTexture: backTextures.label,
-  });
-  backMaterial.uniforms.uGlowColor.value.set(0x60a5fa).convertSRGBToLinear();
-  backMaterial.uniforms.uGlowIntensity.value = 0.85;
-  const nextTextures = {
-    volume: createButtonVolumeTexture(5),
-    label: createButtonLabelTexture('Next'),
-  };
-  const nextMaterial = createRippleMaterial({
-    color: 0x2563eb,
-    opacity: 0.9,
-    volumeTexture: nextTextures.volume,
-    labelTexture: nextTextures.label,
-  });
-  nextMaterial.uniforms.uGlowColor.value.set(0x818cf8).convertSRGBToLinear();
-  nextMaterial.uniforms.uGlowIntensity.value = 0.85;
-
-  const backButton = new Mesh(buttonGeometry, backMaterial);
-  backButton.position.set(-0.7, -0.65, 0);
-  backButton.userData = {
-    ...backButton.userData,
-    type: 'button',
-    action: 'back',
-    ripple: createRippleState(10),
-  };
-  group.add(backButton);
-
-  const nextButton = new Mesh(buttonGeometry, nextMaterial);
-  nextButton.position.set(0.7, -0.65, 0);
-  nextButton.userData = {
-    ...nextButton.userData,
-    type: 'button',
-    action: 'next',
-    ripple: createRippleState(10),
-  };
-  group.add(nextButton);
+  // Text-only Sprites for navigation
+  const leftLabelTexture = createButtonLabelTexture('<');
+  const rightLabelTexture = createButtonLabelTexture('>');
+  const leftMat = new SpriteMaterial({ map: leftLabelTexture, transparent: true, depthWrite: false });
+  const rightMat = new SpriteMaterial({ map: rightLabelTexture, transparent: true, depthWrite: false });
+  const nextButton = new Sprite(leftMat); // left arrow
+  nextButton.userData = { ...nextButton.userData, type: 'button', action: 'back' }; // '<' goes LEFT
+  nextButton.scale.set(BUTTON_WIDTH, BUTTON_HEIGHT, 1);
+  nextButton.visible = false;
+  const backButton = new Sprite(rightMat); // right arrow
+  backButton.userData = { ...backButton.userData, type: 'button', action: 'next' }; // '>' goes RIGHT
+  backButton.scale.set(BUTTON_WIDTH, BUTTON_HEIGHT, 1);
+  backButton.visible = false;
 
   const interactiveObjects = [...panels, backButton, nextButton];
 
@@ -448,6 +439,7 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
   let visible = false;
   let visibilityTransition = null;
   let pendingVisibilityTimeout = null;
+  let buttonsEverShown = false;
 
   function setVisible(nextVisible, { delayMs = 0 } = {}) {
     if (pendingVisibilityTimeout) {
@@ -479,6 +471,12 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
       visibilityState.target = targetValue;
       if (visible) {
         group.visible = true;
+        // First time the carousel becomes visible, show buttons and keep them visible afterward
+        if (!buttonsEverShown) {
+          buttonsEverShown = true;
+          backButton.visible = true;
+          nextButton.visible = true;
+        }
       }
 
       visibilityTransition = {
@@ -614,18 +612,26 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
 
   function updatePanelLayout() {
     const length = panels.length;
-    if (length === 0) {
-      return;
-    }
+    if (length === 0) return;
 
+    const step = (Math.PI * 2) / length;
     const baseIndex = Math.floor(scrollPosition);
     const offset = scrollPosition - baseIndex;
 
     for (let i = 0; i < length; i += 1) {
       const panelMesh = panels[i];
       const dataIndex = mod(baseIndex + i, length);
-      panelMesh.position.x = (i - offset - (length - 1) / 2) * PANEL_SPACING;
+
+      // Angle around Y-axis; scroll rotates the ring
+      const angle = (i - offset) * step;
+      const x = Math.sin(angle) * CAROUSEL_RADIUS;
+      const z = Math.cos(angle) * CAROUSEL_RADIUS;
+
+      panelMesh.position.x = x;
+      panelMesh.position.z = z;
+      panelMesh.rotation.y = angle; // face outward like CSS 3D carousel
       panelMesh.userData.panelIndex = dataIndex;
+
       const labelTexture = panelLabelTextures[dataIndex];
       const volumeTexture = panelVolumeTextures[dataIndex];
       if (labelTexture) {
@@ -642,6 +648,31 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
   }
 
   function update(deltaTime, elapsedTime) {
+    // Ensure UI group is attached to camera once available
+    if (!uiGroup.parent && group.parent) {
+      group.parent.add(uiGroup);
+      uiGroup.add(backButton);
+      uiGroup.add(nextButton);
+    }
+
+    // Position edge buttons at screen sides relative to camera
+    if (uiGroup.parent) {
+      const cam = uiGroup.parent;
+      const z = basePositionZ; // align with carousel depth
+      if (cam.isPerspectiveCamera) {
+        const fovRad = (cam.fov * Math.PI) / 180;
+        const halfH = Math.tan(fovRad / 2) * Math.abs(z);
+        const halfW = halfH * cam.aspect;
+        const xLeft = -halfW + BUTTON_MARGIN_WORLD;
+        const xRight = halfW - BUTTON_MARGIN_WORLD;
+        nextButton.position.set(xLeft, 0, z);
+        backButton.position.set(xRight, 0, z);
+      } else {
+        nextButton.position.set(-1.2, 0, z);
+        backButton.position.set(1.2, 0, z);
+      }
+    }
+
     const { target, speed } = visibilityState;
     const diff = target - visibilityState.value;
     const maxStep = (speed ?? 4) * deltaTime;
@@ -676,7 +707,11 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
         uniforms.uTime.value = elapsedTime;
       }
       if (uniforms?.uVisibility) {
-        uniforms.uVisibility.value = eased;
+        if (mesh.userData?.type === 'button' && buttonsEverShown) {
+          uniforms.uVisibility.value = 1;
+        } else {
+          uniforms.uVisibility.value = eased;
+        }
       }
 
       if (!ripple || !uniforms) {
@@ -725,18 +760,20 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
   function dispose() {
     panelGeometry.dispose();
     buttonGeometry.dispose();
+    panelBackGeometry.dispose();
+    buttonBackGeometry.dispose();
+    glassBackMeshes.forEach((m) => m.material?.dispose());
     panels.forEach((panel) => {
       panel.material?.dispose();
     });
     panelLabelTextures.forEach(disposeTexture);
     panelVolumeTextures.forEach(disposeTexture);
-    disposeTexture(backTextures.label);
-    disposeTexture(backTextures.volume);
-    disposeTexture(nextTextures.label);
-    disposeTexture(nextTextures.volume);
-    [backButton, nextButton].forEach((button) => {
-      button.material?.dispose();
-    });
+    disposeTexture(leftLabelTexture);
+    disposeTexture(rightLabelTexture);
+    ;
+    if (uiGroup.parent) {
+      uiGroup.parent.remove(uiGroup);
+    }
   }
 
   return {
