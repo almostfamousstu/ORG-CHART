@@ -1,4 +1,4 @@
-import { Group, Mesh, MeshStandardMaterial, SphereGeometry } from 'three';
+import { AdditiveBlending, Color, Group, Mesh, MeshStandardMaterial, ShaderMaterial, SphereGeometry } from 'three';
 
 const DEFAULT_RADIUS = 100;
 const DEFAULT_SEGMENTS = {
@@ -154,20 +154,65 @@ export function createNodes(nodes, options = {}) {
   } = options;
 
   const geometry = new SphereGeometry(radius, widthSegments, heightSegments);
+  const haloGeometry = new SphereGeometry(radius * 1.15, widthSegments, heightSegments);
   const group = new Group();
   const meshes = [];
   const materials = new Set();
 
+  function createHaloMaterialForNode(color) {
+    const baseColor = new Color(0x7dd3fc);
+    if (color != null) baseColor.set(color);
+    const mat = new ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uColor: { value: baseColor.convertSRGBToLinear() },
+        uIntensity: { value: 0.85 },
+        uOpacity: { value: 0.9 },
+      },
+      transparent: true,
+      depthWrite: false,
+      blending: AdditiveBlending,
+      vertexShader: `
+        varying vec3 vNormalVS;
+        varying vec3 vViewDir;
+        void main(){
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          vNormalVS = normalize(normalMatrix * normal);
+          vViewDir = normalize(-mvPosition.xyz);
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform float uIntensity;
+        uniform float uOpacity;
+        varying vec3 vNormalVS;
+        varying vec3 vViewDir;
+        void main(){
+          float rim = pow(1.0 - max(0.0, dot(normalize(vNormalVS), normalize(vViewDir))), 2.2);
+          float face = smoothstep(0.0, 1.0, max(0.0, dot(normalize(vNormalVS), vec3(0.0,0.0,1.0))));
+          float glow = mix(face * 0.6, rim, 0.6);
+          float alpha = glow * uOpacity;
+          vec3 color = uColor * (glow * uIntensity + 0.05);
+          if (alpha < 0.02) discard;
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+    });
+    materials.add(mat);
+    return mat;
+  }
+
   function createMaterialForNode(color) {
     const material = new MeshStandardMaterial({
       color: 0x38bdf8,
-      emissive: 0x0a5adf,
-      emissiveIntensity: 0.4,
-      roughness: 0.35,
-      metalness: 0.2,
-      wireframe: true,
+      emissive: 0x1e40af,
+      emissiveIntensity: 1.2,
+      roughness: 0.15,
+      metalness: 0.0,
+      wireframe: false,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.95,
       ...materialOptions,
     });
 
@@ -185,6 +230,10 @@ export function createNodes(nodes, options = {}) {
     const color = typeof getColor === 'function' ? getColor(node) : null;
     const material = createMaterialForNode(color);
     const mesh = new Mesh(geometry, material);
+    // Add glow halo as a child mesh
+    const haloMaterial = createHaloMaterialForNode(color);
+    const halo = new Mesh(haloGeometry, haloMaterial);
+    mesh.add(halo);
 
     mesh.position.set(node.x, node.y, 0);
     mesh.userData = {
@@ -205,9 +254,9 @@ export function createNodes(nodes, options = {}) {
     group,
     meshes,
     update(deltaTime, elapsedTime) {
-      materials.forEach((material) => {
-        const uniforms = material.userData?.uniforms;
-        if (uniforms) {
+      materials.forEach((m) => {
+        const uniforms = m.userData?.uniforms ?? m.uniforms;
+        if (uniforms && uniforms.uTime) {
           uniforms.uTime.value = elapsedTime;
         }
       });
@@ -236,6 +285,7 @@ export function createNodes(nodes, options = {}) {
     },
     dispose() {
       geometry.dispose();
+      haloGeometry.dispose();
       materials.forEach((material) => material.dispose());
       materials.clear();
     },

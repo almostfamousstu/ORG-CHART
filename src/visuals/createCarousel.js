@@ -27,6 +27,9 @@ const BUTTON_WIDTH = 0.92;
 const BUTTON_HEIGHT = 0.34;
 const DEFAULT_PANEL_COUNT = 4;
 
+// Fixed panel labels (transparent background, centered text)
+const PANEL_TEXTS = ['Micro-Automations', 'Administration', 'R&D', 'Culture'];
+
 function createRippleMaterial({ color, opacity, volumeTexture, labelTexture }) {
   const uniforms = {
     uTime: { value: 0 },
@@ -102,25 +105,18 @@ function createRippleMaterial({ color, opacity, volumeTexture, labelTexture }) {
       }
 
       void main() {
-        float depthCoord = fract(uTime * 0.045 + vUv.y * 0.18 + vUv.x * 0.12);
-        vec4 volumeSample = texture(uVolumeTexture, vec3(vUv, depthCoord));
-        float shimmer = noise(vUv * 6.0 + uTime * 0.1) * 0.08;
-        float starfield = noise(vUv * 18.0 + vec2(uTime * 0.05, uTime * 0.04));
-        float glowMask = pow(1.0 - distance(vUv, vec2(0.5, 0.5)), 3.5);
-        vec3 glow = uGlowColor * glowMask * uGlowIntensity;
-        float atmosphere = smoothstep(0.92, 0.2, length(vPosition.xy) / 1.2);
-        vec3 paletteColor = applyPalette(volumeSample.r);
-        vec3 base = mix(uBaseColor, paletteColor + volumeSample.gba * 0.35, 0.55);
-
+        // Sample label texture
         vec4 label = texture(uLabelTexture, vUv);
         float labelPresence = uHasLabel * label.a;
-        base = mix(base, label.rgb, labelPresence);
 
-        float alpha = clamp((0.35 + volumeSample.a * 0.65 + starfield * 0.08), 0.0, 1.0);
-        alpha = max(alpha, labelPresence);
-        alpha *= uOpacity * uVisibility;
+        // Soft text glow constrained by label alpha
+        float glowMask = pow(1.0 - distance(vUv, vec2(0.5, 0.5)), 3.5);
+        float shimmer = noise(vUv * 6.0 + uTime * 0.1) * 0.06;
+        vec3 glow = uGlowColor * (glowMask + shimmer) * uGlowIntensity * labelPresence;
 
-        vec3 color = base + shimmer + glow + atmosphere * 0.05;
+        // Only show label over a fully transparent background
+        float alpha = labelPresence * uOpacity * uVisibility;
+        vec3 color = label.rgb + glow;
         gl_FragColor = vec4(color, alpha);
       }
     `,
@@ -230,57 +226,33 @@ function createPanelLabelTexture({ heading, subtitle, lines }) {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-  gradient.addColorStop(0, 'rgba(59, 130, 246, 0.08)');
-  gradient.addColorStop(0.45, 'rgba(129, 140, 248, 0.12)');
-  gradient.addColorStop(1, 'rgba(45, 212, 191, 0.1)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(24, 24, canvas.width - 48, canvas.height - 48);
+  // Transparent background; centered, sleek text with subtle glow
+  const mainText = String(heading ?? '').trim();
+  const display = mainText.length > 0 ? mainText : '';
 
-  const highlightGradient = ctx.createLinearGradient(0, 0, canvas.width, 0);
-  highlightGradient.addColorStop(0, 'rgba(255, 255, 255, 0.0)');
-  highlightGradient.addColorStop(0.5, 'rgba(190, 242, 255, 0.28)');
-  highlightGradient.addColorStop(1, 'rgba(255, 255, 255, 0.0)');
-  ctx.fillStyle = highlightGradient;
-  ctx.fillRect(32, 36, canvas.width - 64, 38);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
 
-  ctx.strokeStyle = 'rgba(190, 242, 255, 0.42)';
-  ctx.lineWidth = 2.5;
-  ctx.shadowColor = 'rgba(125, 211, 252, 0.28)';
-  ctx.shadowBlur = 12;
-  ctx.beginPath();
-  if (typeof ctx.roundRect === 'function') {
-    ctx.roundRect(24, 24, canvas.width - 48, canvas.height - 48, 28);
-  } else {
-    ctx.moveTo(52, 24);
-    ctx.lineTo(canvas.width - 52, 24);
-    ctx.quadraticCurveTo(canvas.width - 24, 24, canvas.width - 24, 52);
-    ctx.lineTo(canvas.width - 24, canvas.height - 52);
-    ctx.quadraticCurveTo(canvas.width - 24, canvas.height - 24, canvas.width - 52, canvas.height - 24);
-    ctx.lineTo(52, canvas.height - 24);
-    ctx.quadraticCurveTo(24, canvas.height - 24, 24, canvas.height - 52);
-    ctx.lineTo(24, 52);
-    ctx.quadraticCurveTo(24, 24, 52, 24);
-  }
-  ctx.stroke();
+  // Outer glow
+  ctx.shadowColor = 'rgba(56, 189, 248, 0.7)';
+  ctx.shadowBlur = 24;
+
+  // Gradient fill for modern look
+  const grad = ctx.createLinearGradient(0, 0, canvas.width, 0);
+  grad.addColorStop(0, '#93c5fd');
+  grad.addColorStop(0.5, '#a78bfa');
+  grad.addColorStop(1, '#5eead4');
+  ctx.fillStyle = grad;
+
+  // Font stack with futuristic options
+  ctx.font = '600 72px "Orbitron", "Inter", "Segoe UI", system-ui, sans-serif';
+  ctx.fillText(display, canvas.width / 2, canvas.height / 2);
+
+  // Slight sharp pass (stroke) to help readability
   ctx.shadowBlur = 0;
-
-  ctx.fillStyle = 'rgba(226, 232, 240, 0.96)';
-  ctx.font = '300 48px "Inter", "Helvetica Neue", sans-serif';
-  ctx.fillText(heading, 36, 96);
-
-  if (subtitle) {
-    ctx.fillStyle = 'rgba(148, 197, 253, 0.9)';
-    ctx.font = '300 28px "Inter", "Helvetica Neue", sans-serif';
-    ctx.fillText(subtitle, 36, 138);
-  }
-
-  ctx.fillStyle = 'rgba(241, 245, 249, 0.88)';
-  ctx.font = '300 26px "Inter", "Helvetica Neue", sans-serif';
-
-  lines.forEach((line, index) => {
-    ctx.fillText(line, 36, 192 + index * 42);
-  });
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.25)';
+  ctx.strokeText(display, canvas.width / 2, canvas.height / 2);
 
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
@@ -383,9 +355,9 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
     panelVolumeTextures[index] = volumeTexture;
 
     const labelTexture = createPanelLabelTexture({
-      heading: 'Panel',
-      subtitle: `Segment ${index + 1}`,
-      lines: ['Awaiting selection'],
+      heading: PANEL_TEXTS[index % PANEL_TEXTS.length],
+      subtitle: '',
+      lines: [],
     });
     panelLabelTextures[index] = labelTexture;
 
@@ -435,7 +407,11 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
 
   const interactiveObjects = [...panels, backButton, nextButton];
 
-  let scrollPosition = 0;
+  // Smooth scroll state
+  let scrollPosition = 0; // continuous index position
+  let scrollVelocity = 0; // units per second
+  const SCROLL_ACCEL = 5.0; // acceleration per wheel unit
+  const SCROLL_DAMPING = 6.0; // per-second damping
   let visible = false;
   let visibilityTransition = null;
   let pendingVisibilityTimeout = null;
@@ -519,7 +495,9 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
     for (let index = 0; index < panelLabelTextures.length; index += 1) {
       disposeTexture(panelLabelTextures[index]);
 
-      const panelDescriptor = panelsData[index] ?? panelsData[panelsData.length - 1];
+      // Ignore incoming data; use fixed labels
+      const heading = PANEL_TEXTS[index % PANEL_TEXTS.length];
+      const panelDescriptor = { heading, subtitle: '', lines: [] };
       const labelTexture = createPanelLabelTexture(panelDescriptor);
       panelLabelTextures[index] = labelTexture;
     }
@@ -596,18 +574,15 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
 
   function scrollBy(delta) {
     if (panelLabelTextures.length === 0) return;
-
-    scrollPosition += delta;
-    const length = panelLabelTextures.length;
-    if (length > 0) {
-      scrollPosition = mod(scrollPosition, length);
-    }
+    // Apply inertial velocity for gentle scrolling
+    scrollVelocity += delta * SCROLL_ACCEL;
   }
 
   function setScroll(position) {
     const length = panelLabelTextures.length;
     if (length === 0) return;
     scrollPosition = mod(position, length);
+    scrollVelocity = 0;
   }
 
   function updatePanelLayout() {
@@ -697,6 +672,16 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
         visibilityTransition = null;
         resolve?.();
       }
+    }
+
+    // Smoothly damp velocity and advance scroll position
+    if (panelLabelTextures.length > 0) {
+      const damping = Math.max(0, 1 - SCROLL_DAMPING * deltaTime);
+      scrollVelocity *= damping;
+      if (Math.abs(scrollVelocity) < 0.00005) scrollVelocity = 0;
+      scrollPosition += scrollVelocity * deltaTime;
+      const len = panelLabelTextures.length;
+      if (len > 0) scrollPosition = mod(scrollPosition, len);
     }
 
     [...panels, backButton, nextButton].forEach((mesh) => {
