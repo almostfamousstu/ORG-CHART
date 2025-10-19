@@ -1,19 +1,13 @@
 import { defineConfig } from 'vite';
-import { webcrypto } from 'node:crypto';
+import { webcrypto as nodeWebcrypto } from 'node:crypto';
 
-const cryptoSource =
-  (typeof globalThis.crypto === 'object' &&
-    typeof globalThis.crypto.getRandomValues === 'function'
-      ? globalThis.crypto
-      : undefined) ??
-  (typeof webcrypto === 'object' &&
-  typeof webcrypto.getRandomValues === 'function'
-    ? webcrypto
-    : undefined);
+const hasBrowserCrypto =
+  typeof globalThis.crypto === 'object' &&
+  typeof globalThis.crypto?.getRandomValues === 'function';
 
-if (cryptoSource && globalThis.crypto !== cryptoSource) {
+if (!hasBrowserCrypto && typeof nodeWebcrypto?.getRandomValues === 'function') {
   Object.defineProperty(globalThis, 'crypto', {
-    value: cryptoSource,
+    value: nodeWebcrypto,
     configurable: true,
     enumerable: false,
     writable: true,
