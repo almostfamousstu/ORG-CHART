@@ -38,6 +38,7 @@ const rotatingMeshes = new Set();
 let activeRotatingMesh = null;
 let selectedMesh = null;
 let pointerDownObject = null;
+let activeTransitionToken = null;
 
 const carouselDragState = {
   active: false,
@@ -46,6 +47,7 @@ const carouselDragState = {
 };
 
 const CLICK_DRAG_THRESHOLD = 5;
+const CAROUSEL_REVEAL_DELAY = 1000;
 const CAMERA_FOCUS_DURATION = 600;
 const INITIAL_CAMERA_DISTANCE = 50;
 const INITIAL_CAMERA_TRAVEL_DURATION = 1600;
@@ -341,6 +343,10 @@ function startInitialCameraArrival(targetPosition) {
   controls.target.copy(initialTarget);
   controls.update();
 
+  if (focusAnimation?.resolve) {
+    focusAnimation.resolve();
+  }
+
   focusAnimation = {
     start: performance.now(),
     duration: INITIAL_CAMERA_TRAVEL_DURATION,
@@ -348,6 +354,7 @@ function startInitialCameraArrival(targetPosition) {
     toCameraPosition: finalCameraPosition.clone(),
     fromTarget: initialTarget.clone(),
     toTarget: targetPosition.clone(),
+    resolve: null,
   };
 }
 
@@ -373,6 +380,10 @@ function getCarouselIntersections(event) {
 }
 
 function focusCameraOnObject(object) {
+  if (!object) {
+    return Promise.resolve();
+  }
+
   object.getWorldPosition(worldPosition);
 
   const cameraOffset = camera.position.clone().sub(controls.target);
@@ -384,6 +395,15 @@ function focusCameraOnObject(object) {
   }
 
   const desiredOffset = cameraOffset.multiplyScalar(NODE_FOCUS_DISTANCE);
+  if (focusAnimation?.resolve) {
+    focusAnimation.resolve();
+  }
+
+  let resolveFocus = null;
+  const focusPromise = new Promise((resolve) => {
+    resolveFocus = resolve;
+  });
+
   focusAnimation = {
     start: performance.now(),
     duration: CAMERA_FOCUS_DURATION,
@@ -391,7 +411,16 @@ function focusCameraOnObject(object) {
     toCameraPosition: worldPosition.clone().add(desiredOffset),
     fromTarget: controls.target.clone(),
     toTarget: worldPosition.clone(),
+    resolve: () => {
+      if (resolveFocus) {
+        const complete = resolveFocus;
+        resolveFocus = null;
+        complete();
+      }
+    },
   };
+
+  return focusPromise;
 }
 
 function setRotatingMesh(mesh) {
@@ -477,21 +506,51 @@ function setSelectedMesh(mesh) {
   if (!mesh) {
     selectedMesh = null;
     setRotatingMesh(null);
-    carousel.setVisible(false);
     return;
   }
 
   selectedMesh = mesh;
   setRotatingMesh(mesh);
-  carousel.setVisible(true);
+}
+
+async function transitionToMesh(mesh, { revealDelayMs = CAROUSEL_REVEAL_DELAY } = {}) {
+  const transitionToken = {};
+  activeTransitionToken = transitionToken;
+
+  await carousel.setVisible(false);
+
+  if (activeTransitionToken !== transitionToken) {
+    return;
+  }
+
+  if (!mesh) {
+    setSelectedMesh(null);
+    activeTransitionToken = null;
+    return;
+  }
+
+  setSelectedMesh(mesh);
 
   const node = mesh.userData?.node;
   if (node) {
     updateCarouselForNode(node);
   }
+
+  const focusPromise = focusCameraOnObject(mesh);
+  await focusPromise;
+
+  if (activeTransitionToken !== transitionToken) {
+    return;
+  }
+
+  await carousel.setVisible(true, { delayMs: revealDelayMs });
+
+  if (activeTransitionToken === transitionToken) {
+    activeTransitionToken = null;
+  }
 }
 
-function handleNavigation(action) {
+async function handleNavigation(action) {
   if (!selectedMesh) {
     return;
   }
@@ -540,8 +599,7 @@ function handleNavigation(action) {
     return;
   }
 
-  focusCameraOnObject(targetMesh);
-  setSelectedMesh(targetMesh);
+  await transitionToMesh(targetMesh);
 }
 
 function resetPointerInteraction({ clearNodeRipple = true } = {}) {
@@ -615,7 +673,7 @@ renderer.domElement.addEventListener('pointermove', (event) => {
   }
 });
 
-renderer.domElement.addEventListener('pointerup', (event) => {
+renderer.domElement.addEventListener('pointerup', async (event) => {
   if (!event.isPrimary) return;
 
   const hasPointerDown = Boolean(pointerDownPosition);
@@ -628,16 +686,19 @@ renderer.domElement.addEventListener('pointerup', (event) => {
     const wasDragging = carouselDragState.active;
     carousel.handlePointerUp(pointerDownObject);
 
+    let action = null;
     if (!wasDragging && Math.hypot(dx, dy) <= CLICK_DRAG_THRESHOLD) {
-      const action = pointerDownObject.userData?.action;
-      if (action === 'back' || action === 'next') {
-        handleNavigation(action);
-      }
+      action = pointerDownObject.userData?.action;
     }
 
     pointerDownObject = null;
     carouselDragState.active = false;
     carouselDragState.pointerId = null;
+
+    if (action === 'back' || action === 'next') {
+      await handleNavigation(action);
+    }
+
     return;
   }
 
@@ -650,13 +711,12 @@ renderer.domElement.addEventListener('pointerup', (event) => {
   const intersections = getIntersections(event);
 
   if (intersections.length === 0) {
-    setSelectedMesh(null);
+    await transitionToMesh(null);
     return;
   }
 
   const [intersection] = intersections;
-  focusCameraOnObject(intersection.object);
-  setSelectedMesh(intersection.object);
+  await transitionToMesh(intersection.object);
 });
 
 renderer.domElement.addEventListener('pointerleave', () => {
@@ -706,7 +766,9 @@ function update(deltaTime, elapsedTime) {
     if (t >= 1) {
       camera.position.copy(focusAnimation.toCameraPosition);
       controls.target.copy(focusAnimation.toTarget);
+      const { resolve } = focusAnimation;
       focusAnimation = null;
+      resolve?.();
     }
   }
 

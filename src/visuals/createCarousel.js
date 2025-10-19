@@ -446,13 +446,71 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
 
   let scrollPosition = 0;
   let visible = false;
+  let visibilityTransition = null;
+  let pendingVisibilityTimeout = null;
 
-  function setVisible(nextVisible) {
-    visible = Boolean(nextVisible);
-    visibilityState.target = visible ? 1 : 0;
-    if (visible) {
-      group.visible = true;
+  function setVisible(nextVisible, { delayMs = 0 } = {}) {
+    if (pendingVisibilityTimeout) {
+      clearTimeout(pendingVisibilityTimeout);
+      pendingVisibilityTimeout = null;
     }
+
+    if (visibilityTransition?.resolve) {
+      visibilityTransition.resolve();
+    }
+
+    let resolvePromise = null;
+    const promise = new Promise((resolve) => {
+      resolvePromise = resolve;
+    });
+
+    const resolveOnce = () => {
+      if (resolvePromise) {
+        const complete = resolvePromise;
+        resolvePromise = null;
+        complete();
+      }
+    };
+
+    const targetValue = nextVisible ? 1 : 0;
+
+    const startTransition = () => {
+      visible = Boolean(nextVisible);
+      visibilityState.target = targetValue;
+      if (visible) {
+        group.visible = true;
+      }
+
+      visibilityTransition = {
+        resolve: resolveOnce,
+        target: targetValue,
+        pending: false,
+      };
+
+      if (Math.abs(visibilityState.value - targetValue) <= 0.001) {
+        if (!visible && visibilityState.value <= 0.001) {
+          group.visible = false;
+        }
+        visibilityTransition.resolve();
+        visibilityTransition = null;
+      }
+    };
+
+    if (delayMs > 0) {
+      visibilityTransition = {
+        resolve: resolveOnce,
+        target: targetValue,
+        pending: true,
+      };
+      pendingVisibilityTimeout = setTimeout(() => {
+        pendingVisibilityTimeout = null;
+        startTransition();
+      }, delayMs);
+    } else {
+      startTransition();
+    }
+
+    return promise;
   }
 
   function isVisible() {
@@ -599,6 +657,15 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
     group.position.z = basePositionZ + (1 - eased) * 0.35;
     if (!visible && visibilityState.value <= 0.01) {
       group.visible = false;
+    }
+
+    if (visibilityTransition && !visibilityTransition.pending) {
+      const diffToTarget = Math.abs(visibilityState.value - visibilityTransition.target);
+      if (diffToTarget <= 0.001) {
+        const { resolve } = visibilityTransition;
+        visibilityTransition = null;
+        resolve?.();
+      }
     }
 
     [...panels, backButton, nextButton].forEach((mesh) => {
