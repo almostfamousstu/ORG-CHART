@@ -52,6 +52,7 @@ function createRippleMaterial({ color, opacity, volumeTexture, labelTexture }) {
     vertexShader: `
       uniform float uTime;
       uniform float uRippleStrength;
+      uniform float uVisibility;
       uniform vec2 uRippleCenter;
       varying vec2 vUv;
       varying vec3 vPosition;
@@ -60,6 +61,11 @@ function createRippleMaterial({ color, opacity, volumeTexture, labelTexture }) {
         vUv = uv;
         vPosition = position;
         vec3 transformed = position;
+        // Softer float-in/out based on visibility
+        float appear = clamp(uVisibility, 0.0, 1.0);
+        float k = 1.0 - appear;
+        transformed.z += k * 0.4;
+        transformed.y += k * 0.05;
         float dist = distance(uv, uRippleCenter);
         float wave = sin(dist * 28.0 - uTime * 6.0);
         float decay = exp(-dist * 6.0);
@@ -74,7 +80,6 @@ function createRippleMaterial({ color, opacity, volumeTexture, labelTexture }) {
       uniform sampler2D uLabelTexture;
       uniform float uHasLabel;
       uniform float uOpacity;
-      uniform float uVisibility;
       uniform vec3 uBaseColor;
       uniform vec3 uGlowColor;
       uniform float uGlowIntensity;
@@ -114,8 +119,8 @@ function createRippleMaterial({ color, opacity, volumeTexture, labelTexture }) {
         float shimmer = noise(vUv * 6.0 + uTime * 0.1) * 0.06;
         vec3 glow = uGlowColor * (glowMask + shimmer) * uGlowIntensity * labelPresence;
 
-        // Only show label over a fully transparent background
-        float alpha = labelPresence * uOpacity * uVisibility;
+        // Keep label fully visible (no fade); background stays transparent
+        float alpha = labelPresence * uOpacity;
         vec3 color = label.rgb + glow;
         gl_FragColor = vec4(color, alpha);
       }
@@ -250,9 +255,6 @@ function createPanelLabelTexture({ heading, subtitle, lines }) {
 
   // Slight sharp pass (stroke) to help readability
   ctx.shadowBlur = 0;
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = 'rgba(15, 23, 42, 0.25)';
-  ctx.strokeText(display, canvas.width / 2, canvas.height / 2);
 
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
@@ -346,7 +348,7 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
   const panels = [];
   const panelLabelTextures = new Array(panelCount).fill(null);
   const panelVolumeTextures = new Array(panelCount).fill(null);
-  const visibilityState = { value: 0, target: 0, speed: 3.2 };
+  const visibilityState = { value: 0, target: 0, speed: 1.1 }; // slower, softer visibility ramp
 
   const glassBackMeshes = [];
 
@@ -407,11 +409,27 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
 
   const interactiveObjects = [...panels, backButton, nextButton];
 
+  function showButtons() {
+    // Make navigation buttons visible regardless of carousel visibility
+    backButton.visible = true;
+    nextButton.visible = true;
+    buttonsEverShown = true;
+  }
+
+  function hideButtons() {
+    backButton.visible = false;
+    nextButton.visible = false;
+  }
+
+  function areButtonsVisible() {
+    return backButton.visible || nextButton.visible;
+  }
+
   // Smooth scroll state
   let scrollPosition = 0; // continuous index position
   let scrollVelocity = 0; // units per second
-  const SCROLL_ACCEL = 5.0; // acceleration per wheel unit
-  const SCROLL_DAMPING = 6.0; // per-second damping
+  const SCROLL_ACCEL = 1.6; // gentler scroll acceleration
+  const SCROLL_DAMPING = 2.2; // lighter damping for longer glide
   let visible = false;
   let visibilityTransition = null;
   let pendingVisibilityTimeout = null;
@@ -767,6 +785,9 @@ export function createCarousel({ panelCount = DEFAULT_PANEL_COUNT } = {}) {
     backButton,
     nextButton,
     interactiveObjects,
+    showButtons,
+    hideButtons,
+    areButtonsVisible,
     setVisible,
     isVisible,
     setNode,

@@ -47,19 +47,23 @@ const carouselDragState = {
 };
 
 const CLICK_DRAG_THRESHOLD = 5;
-const CAROUSEL_REVEAL_DELAY = 500;
-const CAMERA_FOCUS_DURATION = 1000;
+const CAROUSEL_REVEAL_DELAY = 200;
+const CAMERA_FOCUS_DURATION = 2600; // calmer focus glide
 const INITIAL_CAMERA_DISTANCE = 50;
-const INITIAL_CAMERA_TRAVEL_DURATION = 1600;
-const INITIAL_CAMERA_TRAVEL_MULTIPLIER = 2.5;
+const INITIAL_CAMERA_TRAVEL_DURATION = 3600; // longer, slower initial arrival
+const INITIAL_CAMERA_TRAVEL_MULTIPLIER = 1.6; // start farther for an ethereal glide
 const INITIAL_CAMERA_TARGET_OFFSET_FACTOR = 0.3;
 const INITIAL_CAMERA_OFFSET_DIRECTION = new Vector3(0.6, 0.35, 1).normalize();
 const NODE_FOCUS_DISTANCE = 12;
-const NODE_ROTATION_SPEED = 0.005 * 0.85;
+const NODE_ROTATION_SPEED = 0.002; // calmer, slower rotation
 const NODE_RIPPLE_STRENGTH = 4;
-const HEAD_CHILD_VERTICAL_MULTIPLIER = 5;
+const HEAD_CHILD_VERTICAL_MULTIPLIER = 9; // spread vertical distance further
 const HEAD_CHILD_LINK_COLOR = 0x2563eb;
-const HEAD_CHILD_LINK_OPACITY = 0.45;
+const HEAD_CHILD_LINK_OPACITY = 0.0;
+
+// Subtle, dream-like camera path shaping
+const DREAM_CAM_CURVE_AMP = 0.5; // lateral curve amplitude (world units)
+const DREAM_CAM_PUSH_AMP = 10;  // gentle push in/out along path
 
 function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
@@ -86,9 +90,10 @@ fillLight.position.set(-200, -150, -300);
 scene.add(fillLight);
 
 const layout = processOrgData(sampleOrgData, {
-  nodeSize: [320, 220],
+  nodeSize: [360, 260],
   separation(a, b) {
-    return a.parent === b.parent ? 1.1 : 1.6;
+    // Spread nodes very far apart for an open, airy layout
+    return a.parent === b.parent ? 4.2 : 4.8;
   },
 });
 
@@ -274,7 +279,7 @@ function clearActiveRippleMesh(mesh) {
 
 const { group: linkGroup, dispose: disposeLinks } = createLinks(positionedLinks, {
   color: 0x38bdf8,
-  opacity: 0.6,
+  opacity: 0.0, // make connecting lines invisible
 });
 
 let headChildLinkGroup = null;
@@ -354,6 +359,9 @@ function startInitialCameraArrival(targetPosition) {
     toCameraPosition: finalCameraPosition.clone(),
     fromTarget: initialTarget.clone(),
     toTarget: targetPosition.clone(),
+    curved: true,
+    curveAmp: DREAM_CAM_CURVE_AMP,
+    pushAmp: DREAM_CAM_PUSH_AMP,
     resolve: null,
   };
 }
@@ -372,11 +380,17 @@ function getIntersections(event, targets = nodeGroup.children) {
 }
 
 function getCarouselIntersections(event) {
-  if (!carousel.isVisible()) {
-    return [];
+  // If carousel panels are visible, all carousel targets are interactive
+  if (carousel.isVisible()) {
+    return getIntersections(event, carousel.interactiveObjects);
   }
 
-  return getIntersections(event, carousel.interactiveObjects);
+  // If only buttons are visible (e.g., on head node), allow button hits
+  if (typeof carousel.areButtonsVisible === 'function' && carousel.areButtonsVisible()) {
+    return getIntersections(event, [carousel.backButton, carousel.nextButton]);
+  }
+
+  return [];
 }
 
 function focusCameraOnObject(object) {
@@ -411,6 +425,9 @@ function focusCameraOnObject(object) {
     toCameraPosition: worldPosition.clone().add(desiredOffset),
     fromTarget: controls.target.clone(),
     toTarget: worldPosition.clone(),
+    curved: true,
+    curveAmp: DREAM_CAM_CURVE_AMP,
+    pushAmp: DREAM_CAM_PUSH_AMP,
     resolve: () => {
       if (resolveFocus) {
         const complete = resolveFocus;
@@ -532,6 +549,7 @@ async function transitionToMesh(mesh, { revealDelayMs = CAROUSEL_REVEAL_DELAY } 
   setSelectedMesh(mesh);
 
   const node = mesh.userData?.node;
+  const showCarouselForNode = Boolean(node && node.depth > 0);
   if (node) {
     updateCarouselForNode(node);
   }
@@ -543,7 +561,16 @@ async function transitionToMesh(mesh, { revealDelayMs = CAROUSEL_REVEAL_DELAY } 
     return;
   }
 
-  await carousel.setVisible(true, { delayMs: revealDelayMs });
+  // Only show the carousel for non-root (child) nodes
+  if (showCarouselForNode) {
+    await carousel.setVisible(true, { delayMs: revealDelayMs });
+  } else {
+    // Hide panels but ensure navigation buttons are available on head node
+    await carousel.setVisible(false);
+    if (typeof carousel.showButtons === 'function') {
+      carousel.showButtons();
+    }
+  }
 
   if (activeTransitionToken === transitionToken) {
     activeTransitionToken = null;
@@ -751,17 +778,47 @@ function update(deltaTime, elapsedTime) {
     const t = Math.min(elapsed / focusAnimation.duration, 1);
     const easedT = easeOutCubic(t);
 
-    camera.position.lerpVectors(
-      focusAnimation.fromCameraPosition,
-      focusAnimation.toCameraPosition,
-      easedT,
-    );
+    const fromCam = focusAnimation.fromCameraPosition;
+    const toCam = focusAnimation.toCameraPosition;
+    const fromTgt = focusAnimation.fromTarget;
+    const toTgt = focusAnimation.toTarget;
 
-    controls.target.lerpVectors(
-      focusAnimation.fromTarget,
-      focusAnimation.toTarget,
-      easedT,
-    );
+    if (focusAnimation.curved) {
+      const worldUp = new Vector3(0, 1, 0);
+      const pathDir = toCam.clone().sub(fromCam);
+      const dist = pathDir.length() || 1;
+      pathDir.normalize();
+      let right = new Vector3().crossVectors(pathDir, worldUp);
+      if (right.lengthSq() < 1e-6) {
+        // Fallback when pathDir nearly parallel to up
+        right = new Vector3(1, 0, 0);
+      } else {
+        right.normalize();
+      }
+
+      const amp = focusAnimation.curveAmp ?? DREAM_CAM_CURVE_AMP;
+      const push = focusAnimation.pushAmp ?? DREAM_CAM_PUSH_AMP;
+
+      const s1 = Math.sin(Math.PI * easedT);        // single hump (0->1->0)
+      const s2 = Math.sin(Math.PI * 2.0 * easedT);  // two humps (0->0)
+
+      const lateral = right.clone().multiplyScalar(amp * s1);
+      const vertical = worldUp.clone().multiplyScalar(amp * 0.35 * s2);
+      const along = pathDir.clone().multiplyScalar(push * s2);
+
+      const camBase = fromCam.clone().lerp(toCam, easedT);
+      const camPos = camBase.add(lateral).add(vertical).add(along);
+      camera.position.copy(camPos);
+
+      const tgtBase = fromTgt.clone().lerp(toTgt, easedT);
+      const tgtLateral = right.clone().multiplyScalar(amp * 0.35 * s1);
+      const tgtVertical = worldUp.clone().multiplyScalar(amp * 0.15 * s2);
+      const targetPos = tgtBase.add(tgtLateral).add(tgtVertical);
+      controls.target.copy(targetPos);
+    } else {
+      camera.position.lerpVectors(fromCam, toCam, easedT);
+      controls.target.lerpVectors(fromTgt, toTgt, easedT);
+    }
 
     if (t >= 1) {
       camera.position.copy(focusAnimation.toCameraPosition);

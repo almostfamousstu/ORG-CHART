@@ -26,14 +26,34 @@ export function createRoundedBoxGlassMaterial({
   roughness = 0.07,
   envMap = null,
   envMapIntensity = 1.5,
+  ior = 1.5,
+  clearcoat = 1.0,
+  clearcoatRoughness = 0.05,
+  metalness = 0.0,
+  attenuationColor = 0xffffff,
+  attenuationDistance = Infinity,
 } = {}) {
   const material = new MeshPhysicalMaterial({
+    // Core glass look
     transmission,
     thickness,
     roughness,
+    ior,
+    metalness,
+    clearcoat,
+    clearcoatRoughness,
+
+    // Lighting/reflections
     envMap,
     envMapIntensity,
+
+    // Subtle tint falloff through thickness
+    attenuationColor,
+    attenuationDistance,
   });
+  // Ensure proper blending when stacked with transparent label planes
+  material.transparent = true;
+  material.opacity = 1.0;
   return material;
 }
 
@@ -54,4 +74,3 @@ export function createRoundedBoxMesh({
   }
   return { geometry, material };
 }
-

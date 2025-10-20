@@ -7,7 +7,11 @@ export function createControls(camera, domElement) {
   controls.minDistance = 10;
   controls.maxDistance = 250;
   controls.maxPolarAngle = Math.PI / 2;
+  // Disable all user interactions (click/drag tilt, pan, zoom)
   controls.enableZoom = false;
+  controls.enableRotate = false;
+  controls.enablePan = false;
+  controls.enabled = false; // fully disables input handlers
 
   return controls;
 }
