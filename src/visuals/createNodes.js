@@ -107,16 +107,19 @@ float cnoise(vec3 P) {
 }
 `;
 
-function applyRippleShader(material) {
+function applyRippleShader(material, { radius = 100 } = {}) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = { value: 0 };
     shader.uniforms.uRippleStrength = { value: 0 };
+    shader.uniforms.uRadius = { value: radius };
 
     material.userData.uniforms = shader.uniforms;
 
     shader.vertexShader = `
 uniform float uTime;
 uniform float uRippleStrength;
+uniform float uRadius;
+varying vec3 vModelPosition;
 ${NOISE_CHUNK}
 ` + shader.vertexShader;
 
@@ -132,12 +135,56 @@ ${NOISE_CHUNK}
           displacedPosition += normal * displacement;
         }
         vec3 transformed = displacedPosition;
+        vModelPosition = transformed;
+      `,
+    );
+
+    // Fragment: add purple energy-core emissive
+    shader.fragmentShader = `
+uniform float uTime;
+uniform float uRadius;
+uniform vec3 uGlowColor;
+uniform float uGlowIntensity;
+uniform float uNoiseScale;
+uniform float uNoiseIntensity;
+uniform float uRimPower;
+varying vec3 vModelPosition;
+${NOISE_CHUNK}
+` + shader.fragmentShader;
+
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <emissivemap_fragment>',
+      `
+        #include <emissivemap_fragment>
+        vec3 viewDir_ec = normalize(vViewPosition);
+        float rim_ec = pow(1.0 - max(0.0, dot(normalize(normal), -viewDir_ec)), uRimPower);
+        float n_ec = cnoise(normalize(vModelPosition) * uNoiseScale + vec3(uTime * 0.6));
+        float bands_ec = smoothstep(0.2, 0.95, abs(sin(n_ec * 12.566 + uTime * 2.2)));
+        float r_ec = clamp(length(vModelPosition) / max(uRadius, 1e-4), 0.0, 1.0);
+        float core_ec = pow(smoothstep(1.0, 0.0, r_ec), 1.6);
+        float energy_ec = rim_ec * 0.65 + bands_ec * uNoiseIntensity + core_ec * 0.85;
+        totalEmissiveRadiance += uGlowColor * (uGlowIntensity * energy_ec);
       `,
     );
   };
 
   material.customProgramCacheKey = () => `ripple-${material.uuid}`;
   material.needsUpdate = true;
+}
+
+function applyEnergyCoreUniforms(material, {
+  glowColor = 0xC084FC, // soft purple
+  glowIntensity = 1.4,
+  noiseScale = 3.2,
+  noiseIntensity = 0.8,
+  rimPower = 2.4,
+} = {}) {
+  const u = (material.userData.uniforms ||= {});
+  u.uGlowColor = u.uGlowColor || { value: new Color(glowColor).convertSRGBToLinear() };
+  u.uGlowIntensity = u.uGlowIntensity || { value: glowIntensity };
+  u.uNoiseScale = u.uNoiseScale || { value: noiseScale };
+  u.uNoiseIntensity = u.uNoiseIntensity || { value: noiseIntensity };
+  u.uRimPower = u.uRimPower || { value: rimPower };
 }
 
 export function createNodes(nodes, options = {}) {
@@ -160,14 +207,17 @@ export function createNodes(nodes, options = {}) {
   const materials = new Set();
 
   function createHaloMaterialForNode(color) {
-    const baseColor = new Color(0x7dd3fc);
+    const baseColor = new Color(0x9b5de5);
     if (color != null) baseColor.set(color);
     const mat = new ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
         uColor: { value: baseColor.convertSRGBToLinear() },
-        uIntensity: { value: 0.85 },
+        uIntensity: { value: 1.05 },
         uOpacity: { value: 0.9 },
+        uNoiseScale: { value: 2.6 },
+        uNoiseSpeed: { value: 0.5 },
+        uBanding: { value: 0.6 },
       },
       transparent: true,
       depthWrite: false,
@@ -175,10 +225,12 @@ export function createNodes(nodes, options = {}) {
       vertexShader: `
         varying vec3 vNormalVS;
         varying vec3 vViewDir;
+        varying vec3 vWorldNormal;
         void main(){
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           vNormalVS = normalize(normalMatrix * normal);
           vViewDir = normalize(-mvPosition.xyz);
+          vWorldNormal = normalize(normal);
           gl_Position = projectionMatrix * mvPosition;
         }
       `,
@@ -186,14 +238,20 @@ export function createNodes(nodes, options = {}) {
         uniform vec3 uColor;
         uniform float uIntensity;
         uniform float uOpacity;
+        uniform float uNoiseScale;
+        uniform float uNoiseSpeed;
+        uniform float uBanding;
         varying vec3 vNormalVS;
         varying vec3 vViewDir;
+        varying vec3 vWorldNormal;
+        ${NOISE_CHUNK}
         void main(){
-          float rim = pow(1.0 - max(0.0, dot(normalize(vNormalVS), normalize(vViewDir))), 2.2);
-          float face = smoothstep(0.0, 1.0, max(0.0, dot(normalize(vNormalVS), vec3(0.0,0.0,1.0))));
-          float glow = mix(face * 0.6, rim, 0.6);
+          float rim = pow(1.0 - max(0.0, dot(normalize(vNormalVS), normalize(vViewDir))), 2.1);
+          float n = cnoise(vWorldNormal * uNoiseScale + vec3(uNoiseSpeed * uTime));
+          float wave = smoothstep(0.2, 0.95, abs(sin(n * 12.566 + uTime * 1.8)));
+          float glow = mix(wave * uBanding, rim, 0.7);
           float alpha = glow * uOpacity;
-          vec3 color = uColor * (glow * uIntensity + 0.05);
+          vec3 color = uColor * (glow * uIntensity + 0.06);
           if (alpha < 0.02) discard;
           gl_FragColor = vec4(color, alpha);
         }
@@ -205,22 +263,25 @@ export function createNodes(nodes, options = {}) {
 
   function createMaterialForNode(color) {
     const material = new MeshStandardMaterial({
-      color: 0x38bdf8,
-      emissive: 0x1e40af,
-      emissiveIntensity: 1.2,
-      roughness: 0.15,
+      color: 0x9b5de5,
+      emissive: 0x6d28d9,
+      emissiveIntensity: 1.3,
+      roughness: 0.2,
       metalness: 0.0,
       wireframe: false,
       transparent: true,
-      opacity: 0.95,
+      opacity: 0.96,
       ...materialOptions,
     });
 
+    let glowColor = undefined;
     if (color != null) {
       material.color.set(color);
+      glowColor = color;
     }
 
-    applyRippleShader(material);
+    applyRippleShader(material, { radius });
+    applyEnergyCoreUniforms(material, glowColor != null ? { glowColor } : undefined);
     materials.add(material);
 
     return material;

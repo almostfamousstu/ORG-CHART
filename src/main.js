@@ -218,14 +218,12 @@ const {
   dispose: disposeNodes,
 } = createNodes(positionedNodes, {
   radius: 100,
-  materialOptions: {
-    emissiveIntensity: 0.5,
-  },
   getColor: (node) => {
-    if (node.depth === 0) return 0x60a5fa;
-    if (node.depth === 1) return 0x38bdf8;
-    if (node.depth === 2) return 0x0ea5e9;
-    return 0x22d3ee;
+    // Soft purple palette by depth
+    if (node.depth === 0) return 0xC084FC;
+    if (node.depth === 1) return 0xA78BFA;
+    if (node.depth === 2) return 0x9B5DE5;
+    return 0x8B5CF6;
   },
 });
 
